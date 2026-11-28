@@ -1161,11 +1161,22 @@ pub(crate) fn current_view(
         && let Some(runtime) = runtime.as_deref()
     {
         let selected = state.map(|state| saved_policy(state, policy)).transpose()?;
-        let current = route_challenge::assessment(
+        let current = match route_challenge::assessment(
             runtime,
             selected.as_ref().unwrap_or(policy),
             &record.authority.action,
-        )?;
+        ) {
+            Ok(current) => current,
+            Err(_) if view["status"] == "superseded" => {
+                // Removed service inputs must not make an obsolete request
+                // hide other pending decisions. Its fixed action retains the
+                // recorded assessment; this is no current assessment or grant.
+                view["assessment"] = json!({"availability":"unavailable",
+                    "message":"Current assessment is unavailable for this superseded request. Its request details retain the recorded assessment."});
+                return Ok(view);
+            }
+            Err(error) => return Err(error),
+        };
         view["assessment_changed"] = json!(
             current["input_revision"]
                 != record.authority.action["prepared_assessment"]["input_revision"]

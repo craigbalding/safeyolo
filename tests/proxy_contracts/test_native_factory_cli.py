@@ -28,7 +28,7 @@ from types import SimpleNamespace
 import pytest
 import tomlkit
 
-from tests.proxy_contracts.test_gateway_provider import _provider_run
+from tests.proxy_contracts.test_gateway_provider import _provider_run, _subordinate_bases
 from tests.proxy_contracts.test_native_coord_operator import POLICY as COORD_POLICY
 from tests.proxy_contracts.test_native_coord_operator import terminal
 from tests.proxy_contracts.test_native_policy_cli import native_instance
@@ -526,6 +526,14 @@ esac
                 listener.listen(16)
                 config_path = instance.root / "config.toml"
                 config = tomlkit.parse(config_path.read_text())
+                # This controlled transport is an explicit fixture selection;
+                # production no longer discovers a runtime from PATH.
+                uid_base, gid_base = _subordinate_bases()
+                config["linux"] = {
+                    "host_uid": os.getuid(), "host_gid": os.getgid(),
+                    "uid_base": uid_base, "gid_base": gid_base,
+                    "runsc": str(runsc), "runsc_origin": "system",
+                }
                 config["listeners"].append({"agent_id": agent, "socket_path": socket_path})
                 config_path.write_text(tomlkit.dumps(config))
                 with subprocess.Popen([*arguments, "supervise"]) as supervisor:

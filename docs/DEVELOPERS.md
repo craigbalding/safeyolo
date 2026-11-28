@@ -303,8 +303,15 @@ reducing patch size.
 
 Hosted Rust, retained CLI and installed blackbox jobs restore Rust dependency
 caches after selecting the pinned toolchain. Jobs save these dependency caches
-even when later checks fail, so correction rounds can reuse them. Workspace product binaries still
-build from the checked-out candidate. The full Rust lane uses the same implicit
+even when later checks fail, so correction rounds can reuse them.
+The macOS PR and overnight checks let Cargo use the available CPUs. They enable
+incremental compilation after the dependency cache action, which disables it.
+A separate native-output cache retains their workspace and incremental outputs,
+including after test failures. Its key separates jobs, architectures, toolchains,
+manifests, lockfiles and workflow settings; source revisions select new entries.
+Cargo validates restored outputs and builds the checked-out candidate before
+tests run. Production profiles and the Cargo disk-space guard still apply.
+The full Rust lane uses the same implicit
 host target as the production input producers for Clippy, tests and builds.
 It retains the host target's Coord test runner. Production compilation, test
 compilation and test execution have separate bounded steps. A successful

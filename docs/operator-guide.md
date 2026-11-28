@@ -168,6 +168,13 @@ that guest and keep its HTTP port, for example 3000, distinct from a port on
 your computer or on the SafeYOLO host. Discover the commands with
 `safeyolo agent --help` and `safeyolo agent publish --help`.
 
+Choose the access path for the consumer. Direct publication lets you use your
+own browser. For a browser inside the guest, including webapp security testing,
+use the guest browser and [desktop presentation](#open-an-agent-desktop) when
+you need to interact with it. For another agent calling the app, use the
+[service gateway and that consumer's permissions](../cli/src/safeyolo/agent_context/skills/safeyolo/references/web-services.md#share-with-other-agents-through-the-gateway).
+These paths can coexist; direct publication grants no service access.
+
 ```sh
 safeyolo agent publish work --port 3000 --audience tailnet
 safeyolo agent publications work
@@ -190,6 +197,15 @@ Stop, expiry or a changed guest run disconnects its viewers and removes only
 its foreground Serve mapping. Other publications and unrelated mappings remain.
 Publication grants no outbound network, credential, service or peer-support
 access. Keep unlock codes private.
+
+For host-local access, select `--audience local`. If you connect from another
+computer, forward the returned host listener through your existing Secure Shell (SSH)
+connection as described in the [publication guide](../cli/src/safeyolo/agent_context/skills/safeyolo/references/web-services.md#publish-for-the-operator).
+An agent can request its own app's publication with `web.publish`. Review that
+request in `safeyolo watch` or `safeyolo approvals show ID`. After approval,
+`approvals show ID` recovers the URL and unlock code for that same publication.
+Replace `ID` with the request's approval ID. Reading it does not publish again
+or extend its lifetime.
 
 An unavailable transport or Serve permission reports the selected target's
 missing capability. A generated URL alone does not prove app readiness or
@@ -528,6 +544,7 @@ not enable payload capture, content storage, files or capture listeners:
 
 ```sh
 safeyolo observations
+safeyolo observations --details
 safeyolo observations --json
 ```
 
@@ -538,6 +555,8 @@ checks the returned instance against the selected installation's identity.
 JSON preserves the existing stats owner's values under `observations`;
 `source` identifies their owner and effective queue, payload and capture state.
 
+The ordinary report summarizes capture state, attempted observations and losses,
+and output delivery. `--details` shows all counters and transport histograms.
 The measurements aggregate all agents, requests and connections in that runtime.
 They are not evidence about an individual retained connection or request.
 Reload preserves counters, namespace and effective observation settings.
@@ -658,7 +677,15 @@ safeyolo logs connection CONNECTION_ID --instance INSTANCE_ID --runtime RUNTIME_
 safeyolo logs request REQUEST_ID --instance INSTANCE_ID --runtime RUNTIME_ID --agent work --file instance-a.jsonl --capture capture.pcap --lines 1000
 ```
 
-The `capture` result shows matching observation metadata, its supporting audit
+Ordinary log listings and pivots summarize retained events, run context and
+available or unavailable links. They preserve source locations, investigation
+warnings and the searched window's limits. A guard evaluation describes one
+stage; it does not establish final authorization or a granted permission.
+Select `--json` on ordinary logs or pivots for complete original records,
+attribution, correlations and capture metadata. `logs list --json` provides
+complete listing metadata and references for navigation.
+
+The structured `capture` result shows matching observation metadata, its supporting audit
 lines, and the capture packet number and byte offset. Packet numbers start at
 one; offsets point to the PCAP packet header. The connection view requires the
 recorded connection and agent attribution in the selected instance/runtime.

@@ -813,7 +813,11 @@ fn show_services(value: &Value) -> Result<(), Error> {
         field("Description", &definition["description"]);
         if let Some(capabilities) = definition["capabilities"].as_object() {
             for (name, capability) in capabilities {
-                println!("  {name}: {}", text(&capability["description"]));
+                print!("  {}", text(&json!(name)));
+                if !capability["description"].is_null() {
+                    print!(": {}", text(&capability["description"]));
+                }
+                println!();
             }
         }
     } else {

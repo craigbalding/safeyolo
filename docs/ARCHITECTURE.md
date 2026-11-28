@@ -191,6 +191,33 @@ records for recovery; it must not be reported as successfully stopped.
 - **Isolation platform**: KVM (hardware-enforced) if available; systrap (seccomp-BPF) fallback otherwise. `safeyolo doctor` reports the selected runtime.
 - **Host preparation**: New source installers prepare missing tools and safe subordinate UID/GID allocations. Where Ubuntu restricts user namespaces, they prepare an installation-scoped namespace entry and install profiles for that entry and the selected runtime path. Explicit KVM preparation grants the mapped root GID device access and repairs a selected root UID denial if required. The group grant survives a named-user ACL reset. If the device or its group permissions reset, run `SAFEYOLO_RUNSC_PLATFORM=kvm safeyolo host prepare` before the next sandbox creation. See [host preparation](installation.md#linux-host-preparation-in-new-source-bundles). The published release still needs [manual host preparation](installation.md#guest-prerequisites).
 
+#### Bundled, patched gVisor
+
+Linux bundles carry a private gVisor runtime. Every bundled runtime launch checks
+all four executables against the package checksums. SafeYOLO defaults to this
+runtime and never silently selects a system or `PATH` copy. Operators can select
+a complete tested runtime explicitly with `--system-runsc`. Missing or invalid
+required bundled bytes stop the launch with a host-package repair action.
+The runtime is built from the pinned upstream release
+`release-20261005.0` with three patches. The runtime reports
+`release-20261005.0-safeyolo.2`, and the installer verifies its files against
+the bundle's checksums.
+
+| Patch | What it changes | Why SafeYOLO carries it | Upstream |
+|---|---|---|---|
+| [`host-uds-paths.patch`](../scripts/gvisor/host-uds-paths.patch) | Adds `--host-uds-paths`. Host Unix-domain socket access is refused outside the listed guest paths. | gVisor's `--host-uds=open` covers every mount. The agent needs its proxy socket, and SafeYOLO wants no other host socket reachable, such as one a host process created in the workspace. SafeYOLO lists only `/safeyolo/proxy`. | A SafeYOLO-specific option; not proposed upstream. |
+| [`nofollow.patch`](../scripts/gvisor/nofollow.patch) | Opening a path with `O_DIRECTORY \| O_NOFOLLOW` refuses a final symlink with `ENOTDIR`, matching Linux. A trailing slash still follows it. | Software in the sandbox that uses these flags to avoid following a symlinked directory, including Go's `os.Root`, relies on the refusal. | Reported in [gVisor issue 14786](https://github.com/google/gvisor/issues/14786) and fixed by [pull request 14789](https://github.com/google/gvisor/pull/14789), first released in `release-20261109.0`. SafeYOLO can drop this patch when it moves its pin to that release or later. |
+| [`portforward.patch`](../scripts/gvisor/portforward.patch) | A forwarded connection keeps the reply direction open after the sender finishes. Errors and shutdown still close both directions. | SafeYOLO uses `runsc port-forward` to reach a service inside a guest, and needs the service's reply when the request side closes first. | Not reported upstream. |
+
+Each patch adds upstream-style Go tests, which the runtime build runs. See
+[how the runtime is built](installation.md#linux-host-preparation-in-new-source-bundles).
+
+Agents and jobs permit host sockets only at `/safeyolo/proxy`. Separate gofers
+for extra mounts use `--host-uds=none`: their filesystem root is the extra
+share, which contains no proxy mount. Runtime startup requires the sentry
+sidecar from the selected complete payload, including for the patched release
+suffix.
+
 See the [macOS microVM architecture](microvm-architecture.md) and
 [historical Linux port design](linux-port-design.md) for platform design context.
 

@@ -102,6 +102,25 @@ class TestCheckRule:
         })
         assert len(problems) == 2
 
+    def test_glob_scans_each_matching_doc(self, make_repo):
+        (make_repo / "website/a").mkdir(parents=True)
+        (make_repo / "website/index.html").write_text("fine\n")
+        (make_repo / "website/a/index.html").write_text("SafeYOLO prevents prompt injection.\n")
+        rule = next(r for r in mod._load_rules() if r["name"] == "website-no-detection-overclaims")
+        problems = mod._check_rule(rule)
+        assert len(problems) == 1
+        assert "website/a/index.html" in problems[0]
+        assert "prevents prompt injection" in problems[0]
+
+    def test_glob_without_matches_is_reported(self, make_repo):
+        problems = mod._check_rule({
+            "name": "n",
+            "docs": ["website/**/*.html"],
+            "forbidden": ["anything"],
+        })
+        assert len(problems) == 1
+        assert "not found" in problems[0]
+
     def test_missing_doc_reported(self, make_repo):
         problems = mod._check_rule({
             "name": "n",

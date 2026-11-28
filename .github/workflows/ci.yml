@@ -363,3 +363,9 @@ jobs:
       # ago). See scripts/doc_forbidden.toml.
       - name: Doc forbidden-phrase check
         run: uv run python scripts/check_doc_forbidden.py
+
+      # Every website page lists the black-box controls, assurance-map
+      # decisions or factory behaviors its prose relies on. IDs must exist,
+      # and cited controls must have a witness.
+      - name: Website claims grounding check
+        run: uv run python scripts/check_website_claims.py

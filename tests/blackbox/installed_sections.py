@@ -47,7 +47,7 @@ def copy_prepared_nats(source: Path, root: Path) -> None:
 
 def prepare_native_instance(source: Path, root: Path, *, log=None) -> None:
     """Create fresh native state and reuse the prepared immutable inputs."""
-    subprocess.run([str(source / "bin/safeyolo"), "--instance-dir", str(root), "init"],
+    subprocess.run([str(source / "bin/safeyolo"), "--dangerously-allow-root", "--instance-dir", str(root), "init"],
                    check=True, timeout=10, stdout=log, stderr=log)
     for name in ("bin", "assets", "lib", "libexec", "share", "host"):
         if not (source / name).exists():

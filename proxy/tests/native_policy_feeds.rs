@@ -184,6 +184,7 @@ impl Instance {
         };
         let mut command = Command::new(executable);
         command
+            .env(safeyolo_proxy::host_root::ENVIRONMENT, "1")
             .arg("--instance-dir")
             .arg(&self.root)
             .arg("--json")

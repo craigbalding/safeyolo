@@ -242,7 +242,7 @@ effect_model:
     monkeypatch.setenv("OP_SERVICE_ACCOUNT_TOKEN", "fixture-host-op-auth-312")
     proxy_binary = Path(os.environ.get("SAFEYOLO_RUST_PROXY", REPO / "proxy/target/release/safeyolo-proxy"))
     binary = native_cli(Path(os.environ.get("SAFEYOLO_NATIVE_CLI", proxy_binary.with_name("safeyolo"))), proxy=proxy_binary)
-    subprocess.run([str(binary), "--instance-dir", str(directory), "init"], capture_output=True, check=True, timeout=15)
+    subprocess.run([str(binary), "--dangerously-allow-root", "--instance-dir", str(directory), "init"], capture_output=True, check=True, timeout=15)
     host = tmp_path / "host"
     host.mkdir()
     data = directory / "data"

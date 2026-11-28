@@ -175,11 +175,8 @@ fn review(
         if !effect_is_choice {
             println!("{}", safe(text(&view["effect"])));
         }
-        if matches!(
-            view["action"]["kind"].as_str(),
-            Some("policy_change" | "policy_snapshot")
-        ) {
-            show_decision_evidence(&view);
+        if !view["assessment"].is_null() {
+            show_decision_summary(&view);
         }
     }
     if let Some(count) = view["request_history"]["equivalent_request_count"].as_u64() {
@@ -292,16 +289,13 @@ fn review(
                     ),
                 }
             }
-            ["d" | "details"] => {
-                show_approval(&view)?;
-                match handle.block_on(explain(config, id, None, None)) {
-                    Ok(value) => show_explanation(&value)?,
-                    Err(error) => println!(
-                        "Explanation unavailable: {}. Decision choices remain available.",
-                        safe(&error.to_string())
-                    ),
-                }
-            }
+            ["d" | "details"] => match handle.block_on(explain(config, id, None, None)) {
+                Ok(value) => show_explanation(&value)?,
+                Err(error) => println!(
+                    "Explanation unavailable: {}. Decision choices remain available.",
+                    safe(&error.to_string())
+                ),
+            },
             ["explain" | "e"] | ["explain" | "e", _] => {
                 let option = parts.get(1).copied().or(selected_option.as_deref());
                 match handle.block_on(explain(config, id, None, option)) {

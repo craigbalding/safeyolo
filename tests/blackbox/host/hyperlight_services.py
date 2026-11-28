@@ -241,7 +241,7 @@ class Instance:
         self.index = 0
 
     def command(self, *arguments, input=None):
-        return subprocess.run([str(self.args.cli), "--instance-dir", str(self.root), "--json", *arguments],
+        return subprocess.run([str(self.args.cli), "--dangerously-allow-root", "--instance-dir", str(self.root), "--json", *arguments],
                               input=input, check=True, capture_output=True)
 
     def prepare(self, port):
@@ -361,7 +361,7 @@ class Instance:
                 spec["argv"].append("--isolation-probe" if probe == "isolation" else "--probe")
         path = prefix.with_suffix(".spec.json")
         save(path, spec)
-        arguments = [str(self.args.cli), "--instance-dir", str(self.root), "--json", "job", "run", str(path),
+        arguments = [str(self.args.cli), "--dangerously-allow-root", "--instance-dir", str(self.root), "--json", "job", "run", str(path),
                      "--input", str(inputs)]
         if console:
             console_path = prefix.with_suffix(".console")
@@ -893,7 +893,7 @@ def exercise(args):
             for engine in engines:
                 # Each engine gets a fresh proxy lifetime; grants stay standing.
                 with (args.scratch / f"{engine}-proxy.log").open("wb") as log:
-                    instance.proxy = subprocess.Popen([str(args.proxy), "--config", str(args.root / "config.toml")],
+                    instance.proxy = subprocess.Popen([str(args.proxy), "--config", str(args.root / "config.toml"), "--dangerously-allow-root"],
                                                       stdout=log, stderr=log)
                     try:
                         wait_ready(instance.proxy, args.root, args.admin_port)

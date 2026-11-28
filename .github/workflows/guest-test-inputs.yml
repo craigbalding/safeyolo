@@ -335,7 +335,6 @@ jobs:
     needs: build
     runs-on: macos-latest
     env:
-      CARGO_BUILD_JOBS: "1"
       SAFEYOLO_BUILD_REVISION: ${{ inputs.revision }}
       SAFEYOLO_BUILD_PROFILE: ${{ inputs.profile }}
       SAFEYOLO_CARGO_RESERVE_GIB: "10"

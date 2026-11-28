@@ -243,12 +243,15 @@ pub(crate) fn check_agent_socket_paths(root: &Path, name: &str) -> Result<(), Er
 
 fn check_socket_path(path: &Path, capacity: usize) -> Result<(), Error> {
     if path.as_os_str().as_bytes().len() >= capacity {
-        return Err(format!("Unix socket path is too long ({} bytes; maximum {}): {}. Use a shorter instance --directory or agent name", path.as_os_str().as_bytes().len(), capacity - 1, path.display()).into());
+        return Err(format!("Unix socket path is too long ({} bytes; maximum {}): {}. Use a shorter --instance-dir path or agent name", path.as_os_str().as_bytes().len(), capacity - 1, path.display()).into());
     }
     Ok(())
 }
 
 fn scoped(command: &mut Command, root: &Path) -> Result<(), Error> {
+    if crate::host_root::allowed() {
+        command.env(crate::host_root::ENVIRONMENT, "1");
+    }
     // Preserve unrelated client, proxy and CA settings. Replace the independent
     // historical path overrides so a caller's live selection cannot leak in.
     for name in [
@@ -299,7 +302,7 @@ fn stage(root: &Path, runtime: &Path, reuse: Option<&Path>) -> Result<(), Error>
         }
     }
     std::os::unix::fs::symlink(&bin, root.join("bin"))?;
-    for name in ["lib", "libexec", "assets", "package-info"] {
+    for name in ["lib", "libexec", "assets", "package-info", "SHA256SUMS"] {
         let source = runtime.join(name);
         if source.try_exists()? {
             std::os::unix::fs::symlink(source.canonicalize()?, root.join(name))?;
@@ -639,6 +642,7 @@ pub async fn run(source: &Path, args: &[OsString]) -> Result<i32, Error> {
     if !ephemeral {
         return Err("instance run requires --ephemeral".into());
     }
+    crate::host_root::refuse_root("create an ephemeral instance")?;
     let runtime = runtime.canonicalize()?;
     let directory = tempfile::Builder::new().prefix("sy-").tempdir_in(&parent)?;
     let root = directory.path().canonicalize()?;
@@ -677,7 +681,7 @@ mod tests {
             check_socket_path(Path::new(&"x".repeat(104)), 104)
                 .unwrap_err()
                 .to_string()
-                .contains("shorter instance --directory")
+                .contains("shorter --instance-dir path")
         );
         assert!(check_socket_path(Path::new(&"é".repeat(52)), 104).is_err());
     }

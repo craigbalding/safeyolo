@@ -40,7 +40,7 @@ def test_quick_acquisition_finishes_before_any_cargo_compilation():
         assert not step.get("continue-on-error")
     nats = next(step for step in steps if step.get("name") == "Prepare the pinned NATS test binary")
     consumer = next(step for step in steps if step.get("name") == "Test current native Coord fixture boundaries")
-    assert nats["if"] == consumer["if"] == "steps.changes.outputs.rust == 'true'"
+    assert nats["if"] == consumer["if"] == "needs.native-changes.outputs.rust == 'true'"
     assert "from safeyolo.coord.nats_runtime import ensure_binary" in nats["run"]
     assert "binary = ensure_binary()" in nats["run"]
     assert "SAFEYOLO_COORD_NATS_BINARY={binary}" in nats["run"]
@@ -193,10 +193,13 @@ def test_focused_pr_job_covers_fast_positive_and_negative_boundaries() -> None:
         "(github.event_name == 'pull_request' && github.event.action != 'ready_for_review')"
     )
     assert job["runs-on"] == "ubuntu-latest"
-    assert job["env"]["CARGO_BUILD_JOBS"] == "1"
+    assert "CARGO_BUILD_JOBS" not in job["env"]
+    assert job["needs"] == "native-changes"
     checkout = job["steps"][0]
     assert checkout["with"]["ref"] == "${{ github.event.pull_request.head.sha || github.sha }}"
-    assert "git rev-parse HEAD" in job["steps"][1]["run"]
+    classification = rust_workflow()["jobs"]["native-changes"]
+    assert classification["if"] == job["if"]
+    assert "git rev-parse HEAD" in classification["steps"][1]["run"]
     steps = {step["name"]: step for step in job["steps"] if "name" in step}
     assert "socat" in steps["Install preview test system dependency"]["run"]
     step_names = list(steps)
@@ -204,10 +207,10 @@ def test_focused_pr_job_covers_fast_positive_and_negative_boundaries() -> None:
         "Test native desktop presentation and host entry"
     )
     native = steps["Test focused native boundaries"]
-    assert native["if"] == "steps.changes.outputs.rust == 'true'"
+    assert native["if"] == "needs.native-changes.outputs.rust == 'true'"
     assert steps["Check Rust formatting and lint"]["if"] == native["if"]
     assert steps["Install the pinned Rust toolchain"]["if"] == (
-        "steps.changes.outputs.rust == 'true' || steps.changes.outputs.guest == 'true' || steps.changes.outputs.dispatch == 'true'"
+        "needs.native-changes.outputs.rust == 'true' || needs.native-changes.outputs.guest == 'true' || needs.native-changes.outputs.dispatch == 'true'"
     )
     cli_build = steps["Build the native CLI for recovery and Dispatch checks"]
     site_check = steps["Validate the Dispatch publication tree"]
@@ -276,7 +279,7 @@ def test_linux_input_retention_requires_successful_producers_after_test_failure(
         condition = upload["if"].strip().removeprefix("${{").removesuffix("}}").strip()
         assert condition.startswith("!cancelled() && ")
         condition = condition.replace("!cancelled()", "'false' == 'true'" if cancelled else "'true' == 'true'")
-        for name, value in (("steps.changes.outputs.rust", rust),
+        for name, value in (("needs.native-changes.outputs.rust", rust),
                             ("steps.linux_host_inputs.outcome", host),
                             ("steps.linux_guest_inputs.outcome", guest)):
             assert name in condition
@@ -296,7 +299,7 @@ def test_linux_input_retention_requires_successful_producers_after_test_failure(
 def test_production_diagnostics_check_the_retained_executable_and_panic(tmp_path, failure):
     steps = rust_workflow()["jobs"]["focused-pr"]["steps"]
     check = next(step for step in steps if step.get("name") == "Verify production proxy diagnostics")
-    assert check["if"] == "steps.changes.outputs.rust == 'true'"
+    assert check["if"] == "needs.native-changes.outputs.rust == 'true'"
     for name in ("linux-host-amd64-production", "linux-guest-amd64-production"):
         upload = next(step for step in steps if step.get("with", {}).get("name") == name)
         assert steps.index(upload) < steps.index(check)
@@ -927,8 +930,11 @@ def test_rust_cache_command_preserves_metadata_arguments_environment_and_failure
 def test_platform_changes_add_relevant_macos_checks_without_full_contract_matrix():
     jobs = rust_workflow()["jobs"]
     job = jobs["macos-pr"]
-    assert job["needs"] == "focused-pr"
-    assert job["if"] == "needs.focused-pr.outputs.macos == 'true'"
+    assert job["needs"] == "native-changes"
+    assert job["if"] == "needs.native-changes.outputs.macos == 'true'"
+    assert "needs" not in jobs["native-changes"]
+    assert set(jobs["native-changes"]["outputs"]) == {"rust", "linux", "macos", "guest", "dispatch"}
+    assert not any("download-artifact@" in step.get("uses", "") for step in job["steps"])
     assert job["runs-on"] == "macos-latest"
     runs = "\n".join(step.get("run", "") for step in job["steps"])
     assert "test_vm_control.py" in runs
@@ -937,6 +943,81 @@ def test_platform_changes_add_relevant_macos_checks_without_full_contract_matrix
     assert "--test native_runtime_dependency" in runs
     assert "tests/proxy_contracts --proxy-backend rust" not in runs
     assert "install.sh" not in runs and "bootstrap" not in runs
+
+
+@pytest.mark.parametrize("job_name", ["macos-pr", "contracts"])
+def test_macos_incremental_outputs_survive_dependency_cache_cleanup(tmp_path, job_name):
+    job = rust_workflow()["jobs"][job_name]
+    assert "CARGO_BUILD_JOBS" not in job["env"]
+    steps = {step["name"]: step for step in job["steps"] if "name" in step}
+    dependency = steps["Restore Rust dependency cache"]
+    restore = steps["Restore macOS workspace outputs"]
+    enable = steps["Enable macOS incremental compilation"]
+    save = steps["Save macOS workspace outputs"]
+    names = list(steps)
+    assert names.index(dependency["name"]) < names.index(restore["name"]) < names.index(enable["name"])
+    assert names.index(enable["name"]) < names.index(save["name"])
+    assert dependency["with"]["cache-targets"] == (
+        False if job_name == "macos-pr" else "${{ matrix.os != 'macos-latest' }}"
+    )
+    assert restore["if"] == enable["if"] == (
+        "needs.native-changes.outputs.rust == 'true'" if job_name == "macos-pr" else "matrix.os == 'macos-latest'"
+    )
+    assert restore["with"]["path"] == save["with"]["path"] == "proxy/target\nguest/command/target\n"
+    assert "${{ env.RUSTUP_TOOLCHAIN }}" in restore["with"]["key"]
+    assert "${{ runner.arch }}" in restore["with"]["key"]
+    assert restore["with"]["key"].startswith(restore["with"]["restore-keys"])
+    assert "cache-primary-key" in save["with"]["key"]
+    # An earlier failed check must still save useful compiler outputs; a skipped
+    # restore or an exact cache hit must not create another cache entry.
+    for cancelled, outcome, hit, expected in [
+        (False, "success", "false", True), (False, "success", "true", False),
+        (False, "skipped", "", False), (True, "success", "false", False),
+    ]:
+        condition = save["if"].removeprefix("${{").removesuffix("}}").strip()
+        condition = condition.replace("!cancelled()", "'false' == 'true'" if cancelled else "'true' == 'true'")
+        condition = condition.replace("steps.macos_rust_cache.outcome", shlex.quote(outcome))
+        condition = condition.replace("steps.macos_rust_cache.outputs.cache-hit", shlex.quote(hit))
+        result = subprocess.run(["bash", "-e", "-c", f"[[ {condition} ]]"], capture_output=True, text=True)
+        assert result.returncode == (0 if expected else 1), result.stderr
+    environment = tmp_path / "job-env"
+    environment.write_text("CARGO_INCREMENTAL=0\n")
+    result = subprocess.run(["bash", "-e", "-c", enable["run"]], capture_output=True, text=True,
+                            env=dict(os.environ, GITHUB_ENV=str(environment), CARGO_INCREMENTAL="0"))
+    assert result.returncode == 0, result.stderr
+    assert environment.read_text().splitlines()[-1] == "CARGO_INCREMENTAL=1"
+
+
+def test_native_build_jobs_use_available_cpus():
+    jobs = rust_workflow()["jobs"]
+    shared = yaml.safe_load(WORKFLOW.with_name("guest-test-inputs.yml").read_text())
+    for job in [jobs["host-executor"], jobs["focused-pr"], jobs["macos-pr"], jobs["contracts"], shared["jobs"]["macos-host"]]:
+        assert "CARGO_BUILD_JOBS" not in job["env"]
+        assert all("CARGO_BUILD_JOBS" not in step.get("env", {}) for step in job["steps"])
+
+
+@pytest.mark.parametrize("build_jobs", [None, "2"])
+def test_linux_build_environment_uses_runner_cpus_and_incremental_compilation(tmp_path, build_jobs):
+    steps = rust_workflow()["jobs"]["focused-pr"]["steps"]
+    cache = next(step for step in steps if step.get("name") == "Restore Rust dependency cache")
+    enable = next(step for step in steps if step.get("name") == "Record runner resources and enable incremental compilation")
+    compile_step = next(step for step in steps if "cargo_with_space.sh" in step.get("run", ""))
+    assert steps.index(cache) < steps.index(enable) < steps.index(compile_step)
+    assert enable["if"] == cache["if"]
+    environment = tmp_path / "job-env"
+    environment.write_text("CARGO_INCREMENTAL=0\n")
+    process_environment = dict(os.environ, GITHUB_ENV=str(environment), RUNNER_TEMP=str(tmp_path),
+                               CARGO_INCREMENTAL="0")
+    process_environment.pop("CARGO_BUILD_JOBS", None)
+    if build_jobs is not None:
+        process_environment["CARGO_BUILD_JOBS"] = build_jobs
+    result = subprocess.run(["bash", "-e", "-c", enable["run"]], capture_output=True, text=True,
+                            env=process_environment)
+    assert result.returncode == 0, result.stderr
+    assert environment.read_text().splitlines()[-1] == "CARGO_INCREMENTAL=1"
+    expected_jobs = build_jobs or subprocess.check_output(["nproc"], text=True).strip()
+    assert f"CARGO_BUILD_JOBS={expected_jobs}" in environment.read_text().splitlines()
+    assert "Available CPUs:" in result.stdout
 
 
 @pytest.mark.parametrize("path,expected,matcher", [
@@ -995,8 +1076,16 @@ def test_pr_change_selection_runs_the_matching_platform_checks(tmp_path, path, e
         if matcher == "failing":
             (commands / "grep").write_text("#!/bin/sh\nexit 2\n")
             (commands / "grep").chmod(0o755)
-    steps = rust_workflow()["jobs"]["focused-pr"]["steps"]
-    step = next(step for step in steps if step.get("id") == "changes")
+    jobs = rust_workflow()["jobs"]
+    steps = jobs["focused-pr"]["steps"]
+    step = next(step for step in jobs["native-changes"]["steps"] if step.get("id") == "changes")
+    verify = next(step for step in jobs["native-changes"]["steps"] if step.get("name") == "Verify the exact pull-request head")
+    for expected_head, code in [(git("rev-parse", "HEAD"), 0), (base, 1), ("", 1)]:
+        checked = subprocess.run([str(commands / "bash"), "-e", "-c", verify["run"]],
+                                 cwd=tmp_path, capture_output=True, text=True,
+                                 env=dict(os.environ, PATH=str(commands), EXPECTED_HEAD=expected_head,
+                                          BASH_ENV=os.devnull))
+        assert checked.returncode == code, checked.stderr
     # Actions' unspecified Linux shell uses Bash -e, without nounset or pipefail.
     result = subprocess.run([str(commands / "bash"), "-e", "-c", step["run"]],
                             cwd=tmp_path, capture_output=True, text=True, check=False,
@@ -1015,7 +1104,7 @@ def test_pr_change_selection_runs_the_matching_platform_checks(tmp_path, path, e
         build = next(step for step in steps if step.get("id") == "linux_host_inputs")
         boundaries = next(step for step in steps if step.get("name") == "Test workflow, fixture, deletion, and blackbox runner boundaries")
         assert "tests/test_proxy_rust_coord_fixture.py" not in boundaries["run"]
-        assert fixture["if"] == build["if"] == "steps.changes.outputs.rust == 'true'"
+        assert fixture["if"] == build["if"] == "needs.native-changes.outputs.rust == 'true'"
         assert steps.index(build) < steps.index(fixture)
         assert fixture["env"] == {
             "SAFEYOLO_NATIVE_CLI": "${{ github.workspace }}/proxy/target/release/safeyolo",
@@ -1039,7 +1128,7 @@ def test_pr_change_selection_runs_the_matching_platform_checks(tmp_path, path, e
         assert steps.index(prerequisite) <= steps.index(installed)
         condition = prerequisite.get("if", "true")
         for key in ("rust", "guest", "dispatch"):
-            condition = condition.replace(f"steps.changes.outputs.{key}", shlex.quote(actual.get(key, "")))
+            condition = condition.replace(f"needs.native-changes.outputs.{key}", shlex.quote(actual.get(key, "")))
         # These string comparisons and disjunctions share Actions' truth table.
         admission = subprocess.run(["bash", "-e", "-c", f"[[ {condition} ]]"],
                                    capture_output=True, text=True, env=dict(os.environ, BASH_ENV=os.devnull))

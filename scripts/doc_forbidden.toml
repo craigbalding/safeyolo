@@ -102,3 +102,22 @@ forbidden = [
     "native CLI", "Native CLI",
     "native instance", "Native instance",
 ]
+
+[[rule]]
+name = "website-no-detection-overclaims"
+docs = ["website/*.html", "website/**/*.html"]
+reason = "The default policy allows any destination, and prompt-injection signals are recorded as evidence, not used to decide. The website may describe what policy lets an operator block, not claim that SafeYOLO detects or prevents exfiltration or prompt injection, or denies outbound access by default."
+forbidden = [
+    "prevents prompt injection", "Prevents prompt injection",
+    "stops prompt injection", "Stops prompt injection",
+    "blocks prompt injection", "Blocks prompt injection",
+    "detects prompt injection", "Detects prompt injection",
+    "protects against prompt injection", "Protects against prompt injection",
+    "detects exfiltration", "Detects exfiltration",
+    "prevents exfiltration", "Prevents exfiltration",
+    "detects secrets and checks where they are going",
+    "no outbound access by default", "No outbound access by default",
+    "no network access by default", "No network access by default",
+    "deny by default", "Deny by default",
+    "default-deny", "Default-deny",
+]

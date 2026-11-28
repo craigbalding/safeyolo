@@ -15,6 +15,7 @@ fn executable() -> OsString {
 
 fn cli(root: &Path, arguments: &[&str]) -> Output {
     Command::new(executable())
+        .env(safeyolo_proxy::host_root::ENVIRONMENT, "1")
         .arg("--instance-dir")
         .arg(root)
         .args(arguments)
@@ -30,6 +31,120 @@ fn stdout(output: Output) -> String {
         String::from_utf8_lossy(&output.stderr)
     );
     String::from_utf8(output.stdout).unwrap()
+}
+
+#[test]
+fn policy_capabilities_explain_definitions_without_exposing_internal_records() {
+    let scratch = tempfile::tempdir().unwrap();
+    let root = scratch.path().join("selected policy instance");
+    // Discovery also works before installation and must not create instance state.
+    let human = stdout(cli(&root, &["policy", "capabilities"]));
+    assert!(
+        human.contains("Policy controls\n  Scope: Local native policy controls"),
+        "{human}"
+    );
+    assert!(
+        human.contains("Effects: Configure network, credential"),
+        "{human}"
+    );
+    assert!(
+        human.contains("Coverage limits: Typed controls do not describe the entire"),
+        "{human}"
+    );
+    assert!(
+        human.contains(
+            "Host execution bindings (service access to a native target)\n  Scope: Not described"
+        ),
+        "{human}"
+    );
+    assert!(human.contains("Effects: Not described"), "{human}");
+    assert!(
+        human.contains("Instance permission and readiness: unknown"),
+        "{human}"
+    );
+    assert!(
+        human.contains("grants no access and performs no protected operation"),
+        "{human}"
+    );
+    for internal in [
+        "null",
+        "::",
+        "[\"",
+        "[null]",
+        "\"controls\"",
+        "host_execution_binding",
+    ] {
+        assert!(!human.contains(internal), "{internal}: {human}");
+    }
+    assert!(!root.exists());
+    let machine = stdout(cli(&root, &["policy", "capabilities", "--json"]));
+    let machine: Value = serde_json::from_str(&machine).unwrap();
+    // The selected CLI can be a production build while this driver is a test build.
+    let mut actual = machine.clone();
+    let mut expected = safeyolo_proxy::policy::capabilities::discover();
+    actual.as_object_mut().unwrap().remove("build_profile");
+    expected.as_object_mut().unwrap().remove("build_profile");
+    assert_eq!(actual, expected);
+    let binding = machine["definitions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|definition| definition["definition"] == "host_execution_binding")
+        .unwrap();
+    assert_eq!(
+        binding["owner"],
+        "host_execution::gateway::Binding::validate"
+    );
+    assert!(binding["scope"].is_null());
+    assert_eq!(binding["gaps"], serde_json::json!([null]));
+    assert!(binding["permission"]["granted"].is_null());
+    assert_eq!(binding["readiness"]["observation"], "unknown");
+    assert!(!root.exists());
+}
+
+#[tokio::test]
+async fn service_capabilities_without_descriptions_do_not_look_unavailable() {
+    let scratch = tempfile::tempdir().unwrap();
+    let root = scratch.path().join("selected service instance");
+    stdout(cli(&root, &["init"]));
+    fs::create_dir_all(root.join("services")).unwrap();
+    let definition = serde_json::json!({
+        "schema_version": 1,
+        "name": "notes",
+        "default_host": "notes.safeyolo.internal",
+        "capabilities": {
+            "reader": {"routes": [{"methods": ["GET"], "path": "/notes"}]},
+            "writer": {
+                "description": "Write saved notes",
+                "routes": [{"methods": ["POST"], "path": "/notes"}]
+            }
+        }
+    });
+    fs::write(root.join("services/notes.yaml"), definition.to_string()).unwrap();
+    fs::write(
+        root.join("config.toml"),
+        "admin_port = 0\nlisteners = []\nflow_store_enabled = false\n",
+    )
+    .unwrap();
+    let proxy = safeyolo_proxy::Proxy::start(
+        safeyolo_proxy::native_config::read(&root.join("config.toml")).unwrap(),
+    )
+    .await
+    .unwrap();
+    let (human, machine) = tokio::task::spawn_blocking(move || {
+        (
+            stdout(cli(&root, &["services", "show", "notes"])),
+            stdout(cli(&root, &["services", "show", "notes", "--json"])),
+        )
+    })
+    .await
+    .unwrap();
+    proxy.shutdown().await;
+    assert!(human.contains("  reader\n"), "{human}");
+    assert!(human.contains("  writer: Write saved notes\n"), "{human}");
+    assert!(!human.contains("unavailable"), "{human}");
+    let machine: Value = serde_json::from_str(&machine).unwrap();
+    assert_eq!(machine["definition"], definition);
 }
 
 #[tokio::test]
@@ -877,6 +992,21 @@ fn saved_policy_remains_useful_when_proxy_is_down_and_storage_listing_creates_no
         serde_json::from_str(&stdout(cli(&root, &["policy", "show", "--json"]))).unwrap();
     assert!(record.get("effective").is_none());
     assert!(record["saved"].is_object());
+    let provider = policy
+        .lines()
+        .find(|line| line.starts_with("api.openai.com "))
+        .unwrap();
+    assert!(
+        provider.contains("openai:*") && provider.matches("not set").count() == 3,
+        "{provider}"
+    );
+    assert!(!provider.contains("unavailable"));
+    assert!(
+        record["saved"]["hosts"]["api.openai.com"]
+            .get("egress")
+            .is_none()
+    );
+    assert!(policy.contains("other matching rules and defaults still apply"));
     let credentials = stdout(cli(&root, &["credentials", "list"]));
     assert!(credentials.contains("storage is not configured"));
     assert!(!root.join("data/credentials.enc").exists());

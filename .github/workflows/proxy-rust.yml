@@ -83,7 +83,6 @@ jobs:
           - os: ubuntu-24.04
             target: x86_64-pc-windows-gnu
     env:
-      CARGO_BUILD_JOBS: "1"
       CARGO_TARGET_DIR: ${{ github.workspace }}/host-executor/target
       SAFEYOLO_BUILD_REVISION: ${{ github.event.pull_request.head.sha || github.sha }}
       EXECUTOR_TARGET: ${{ matrix.target }}
@@ -185,19 +184,18 @@ jobs:
       host_inputs: true
       retain_packages: true
 
-  focused-pr:
-    name: Native platform validation (Ubuntu)
+  native-changes:
+    name: Select native checks
     if: >-
       github.event_name == 'push' ||
       (github.event_name == 'pull_request' && github.event.action != 'ready_for_review')
     runs-on: ubuntu-latest
-    env:
-      CARGO_BUILD_JOBS: "1"
-      SAFEYOLO_BUILD_REVISION: ${{ github.event.pull_request.head.sha || github.sha }}
     outputs:
       macos: ${{ steps.changes.outputs.macos }}
       linux: ${{ steps.changes.outputs.linux }}
       rust: ${{ steps.changes.outputs.rust }}
+      guest: ${{ steps.changes.outputs.guest }}
+      dispatch: ${{ steps.changes.outputs.dispatch }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -249,8 +247,23 @@ jobs:
             exit 2
           fi
 
+  focused-pr:
+    name: Native platform validation (Ubuntu)
+    needs: native-changes
+    if: >-
+      github.event_name == 'push' ||
+      (github.event_name == 'pull_request' && github.event.action != 'ready_for_review')
+    runs-on: ubuntu-latest
+    env:
+      SAFEYOLO_BUILD_REVISION: ${{ github.event.pull_request.head.sha || github.sha }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 0
+
       - name: Free unused Android SDK space for native checks
-        if: steps.changes.outputs.rust == 'true' || steps.changes.outputs.guest == 'true' || steps.changes.outputs.dispatch == 'true'
+        if: needs.native-changes.outputs.rust == 'true' || needs.native-changes.outputs.guest == 'true' || needs.native-changes.outputs.dispatch == 'true'
         run: |
           df -Pk .
           # This job uses Rust, Python, Node and musl, but no Android tools.
@@ -276,14 +289,14 @@ jobs:
           getsubids -g "$USER"
 
       - name: Install patched runtime build dependencies
-        if: steps.changes.outputs.rust == 'true'
+        if: needs.native-changes.outputs.rust == 'true'
         run: |
           df -Pk "$RUNNER_TEMP"
           test "$(df -Pk "$RUNNER_TEMP" | awk 'NR == 2 {print $4}')" -ge 10485760
           sudo -n apt-get install -y -qq --no-install-recommends crossbuild-essential-arm64 clang libbpf-dev
 
       - name: Prepare the pinned NATS test binary
-        if: steps.changes.outputs.rust == 'true'
+        if: needs.native-changes.outputs.rust == 'true'
         env:
           SAFEYOLO_NATS_TEST_INSTANCE: quick-inputs
           SAFEYOLO_COORD_DATA_DIR: ${{ runner.temp }}/nats-inputs
@@ -298,7 +311,7 @@ jobs:
           PYTHON
 
       - name: Install the pinned Codex execpolicy test consumer
-        if: steps.changes.outputs.rust == 'true'
+        if: needs.native-changes.outputs.rust == 'true'
         run: |
           mkdir -p "$RUNNER_TEMP/codex-execpolicy"
           cp tools/codex-execpolicy/package{,-lock}.json "$RUNNER_TEMP/codex-execpolicy/"
@@ -319,15 +332,15 @@ jobs:
 
       - name: Restore the verified patched gVisor runtime
         id: runsc_cache
-        if: steps.changes.outputs.rust == 'true'
+        if: needs.native-changes.outputs.rust == 'true'
         uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         with:
-          path: ${{ runner.temp }}/runsc-cache/safeyolo/gvisor/release-20261005.0-safeyolo.1/*/linux-amd64/runtime
-          key: runsc-runtime-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('scripts/acquire_runsc.sh', 'scripts/build_runsc.sh', 'scripts/native_package.sh', 'scripts/gvisor/nofollow.patch', 'scripts/gvisor/portforward.patch') }}
+          path: ${{ runner.temp }}/runsc-cache/safeyolo/gvisor/release-20261005.0-safeyolo.2/*/linux-amd64/runtime
+          key: runsc-runtime-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('scripts/acquire_runsc.sh', 'scripts/build_runsc.sh', 'scripts/native_package.sh', 'scripts/gvisor/nofollow.patch', 'scripts/gvisor/portforward.patch', 'scripts/gvisor/host-uds-paths.patch') }}
 
       - name: Prepare the complete patched gVisor runtime
         id: runsc_inputs
-        if: steps.changes.outputs.rust == 'true'
+        if: needs.native-changes.outputs.rust == 'true'
         shell: bash
         env:
           XDG_CACHE_HOME: ${{ runner.temp }}/runsc-cache
@@ -341,7 +354,7 @@ jobs:
         if: steps.runsc_inputs.outcome == 'success' && steps.runsc_cache.outputs.cache-hit != 'true'
         uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         with:
-          path: ${{ runner.temp }}/runsc-cache/safeyolo/gvisor/release-20261005.0-safeyolo.1/*/linux-amd64/runtime
+          path: ${{ runner.temp }}/runsc-cache/safeyolo/gvisor/release-20261005.0-safeyolo.2/*/linux-amd64/runtime
           key: ${{ steps.runsc_cache.outputs.cache-primary-key }}
 
       - name: Retain the complete patched gVisor runtime
@@ -354,14 +367,14 @@ jobs:
           if-no-files-found: error
 
       - name: Install the pinned Rust toolchain
-        if: steps.changes.outputs.rust == 'true' || steps.changes.outputs.guest == 'true' || steps.changes.outputs.dispatch == 'true'
+        if: needs.native-changes.outputs.rust == 'true' || needs.native-changes.outputs.guest == 'true' || needs.native-changes.outputs.dispatch == 'true'
         working-directory: proxy
         run: |
           rustup show active-toolchain
           printf 'RUSTUP_TOOLCHAIN=%s\n' "$(rustup show active-toolchain | awk '{print $1}')" >> "$GITHUB_ENV"
 
       - name: Restore Rust dependency cache
-        if: steps.changes.outputs.rust == 'true' || steps.changes.outputs.guest == 'true' || steps.changes.outputs.dispatch == 'true'
+        if: needs.native-changes.outputs.rust == 'true' || needs.native-changes.outputs.guest == 'true' || needs.native-changes.outputs.dispatch == 'true'
         uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           cmd-format: bash "${{ github.workspace }}/scripts/rust_cache_command.sh" {0}
@@ -372,15 +385,27 @@ jobs:
           cache-bin: false
           cache-on-failure: true
 
+      - name: Record runner resources and enable incremental compilation
+        if: needs.native-changes.outputs.rust == 'true' || needs.native-changes.outputs.guest == 'true' || needs.native-changes.outputs.dispatch == 'true'
+        run: |
+          printf 'Available CPUs: %s\n' "$(nproc)"
+          # The guest producer defaults to one job for constrained local hosts.
+          # This runner has the memory for its available CPUs; preserve an override.
+          printf 'CARGO_BUILD_JOBS=%s\n' "${CARGO_BUILD_JOBS:-$(nproc)}" | tee -a "$GITHUB_ENV"
+          free -m
+          df -Pk . "$RUNNER_TEMP"
+          # rust-cache disables incremental compilation unless explicitly reset.
+          printf 'CARGO_INCREMENTAL=1\n' >> "$GITHUB_ENV"
+
       - name: Install Linux guest build tools
-        if: steps.changes.outputs.rust == 'true' || steps.changes.outputs.guest == 'true'
+        if: needs.native-changes.outputs.rust == 'true' || needs.native-changes.outputs.guest == 'true'
         run: |
           sudo -n apt-get update -qq
           sudo -n apt-get install -y -qq --no-install-recommends musl-tools
           rustup target add "$(uname -m)-unknown-linux-musl"
 
       - name: Check Rust formatting and lint
-        if: steps.changes.outputs.rust == 'true'
+        if: needs.native-changes.outputs.rust == 'true'
         working-directory: proxy
         run: |
           df -Pk .
@@ -388,7 +413,7 @@ jobs:
           ../scripts/cargo_with_space.sh clippy --release --locked --all-targets -- -D warnings
 
       - name: Check the Hyperlight host adapter
-        if: steps.changes.outputs.rust == 'true'
+        if: needs.native-changes.outputs.rust == 'true'
         run: |
           scripts/cargo_with_space.sh fmt --manifest-path jobs/hyperlight-host/Cargo.toml -- --check
           scripts/cargo_with_space.sh clippy --locked --all-targets --manifest-path jobs/hyperlight-host/Cargo.toml -- -D warnings
@@ -397,29 +422,42 @@ jobs:
       # Native Cargo tests write the default release binary. Run them before
       # staging musl helpers and their checksums for the native installer.
       - name: Check native guest command operations
-        if: steps.changes.outputs.guest == 'true'
+        if: needs.native-changes.outputs.guest == 'true'
         run: |
           scripts/cargo_with_space.sh test --release --manifest-path guest/command/Cargo.toml --locked
           scripts/cargo_with_space.sh clippy --release --manifest-path guest/command/Cargo.toml --locked --all-targets -- -D warnings
 
       - name: Build the native guest command artifact
         id: linux_guest_inputs
-        if: steps.changes.outputs.rust == 'true' || steps.changes.outputs.guest == 'true'
+        if: needs.native-changes.outputs.rust == 'true' || needs.native-changes.outputs.guest == 'true'
         env:
           SAFEYOLO_BUILD_PROFILE: production
-          CARGO_BUILD_JOBS: "1"
         run: scripts/build_guest_command.sh
 
       - name: Build Linux production inputs
         id: linux_host_inputs
-        if: steps.changes.outputs.rust == 'true'
+        if: needs.native-changes.outputs.rust == 'true'
         run: scripts/cargo_with_space.sh build --release --manifest-path proxy/Cargo.toml --locked --bin safeyolo --bin safeyolo-coord --bin safeyolo-proxy
+
+      - name: Qualify the packaged patched gVisor runtime
+        if: needs.native-changes.outputs.rust == 'true'
+        run: |
+          set -euo pipefail
+          package="$RUNNER_TEMP/uds-host-package"
+          scripts/build_host_packages.sh --directory "$package" --profile production \
+            --artifacts "$PWD/proxy/target/release" \
+            --guest-artifacts "$PWD/guest/command/target/release" \
+            --runtime-artifacts "$(dirname "$(command -v tmux)")"
+          mkdir "$RUNNER_TEMP/runtime-qualification"
+          cp "$package/package-info" "$package/SHA256SUMS" "$RUNNER_TEMP/runtime-qualification/"
+          scripts/qualify_runsc_host_uds.sh "$package/libexec" "$RUNNER_TEMP/runtime-qualification/host-uds"
+          scripts/qualify_runsc_nofollow.sh "$package/libexec" "$RUNNER_TEMP/runtime-qualification/nofollow"
 
       # Make matching inputs available while the remaining checks continue.
       # Failed runs retain successful matching builds for diagnosis, not release.
       - name: Retain built Linux production inputs
         if: >-
-          ${{ !cancelled() && steps.changes.outputs.rust == 'true' &&
+          ${{ !cancelled() && needs.native-changes.outputs.rust == 'true' &&
               steps.linux_host_inputs.outcome == 'success' && steps.linux_guest_inputs.outcome == 'success' }}
         uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
         with:
@@ -432,7 +470,7 @@ jobs:
           if-no-files-found: error
       - name: Retain matching Linux guest inputs
         if: >-
-          ${{ !cancelled() && steps.changes.outputs.rust == 'true' &&
+          ${{ !cancelled() && needs.native-changes.outputs.rust == 'true' &&
               steps.linux_host_inputs.outcome == 'success' && steps.linux_guest_inputs.outcome == 'success' }}
         uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
         with:
@@ -444,7 +482,7 @@ jobs:
           if-no-files-found: error
 
       - name: Verify production proxy diagnostics
-        if: steps.changes.outputs.rust == 'true'
+        if: needs.native-changes.outputs.rust == 'true'
         run: |
           set -euo pipefail
           proxy=proxy/target/release/safeyolo-proxy
@@ -457,11 +495,11 @@ jobs:
           scripts/cargo_with_space.sh test --release --manifest-path proxy/Cargo.toml --locked --test version
 
       - name: Build the native CLI for recovery and Dispatch checks
-        if: steps.changes.outputs.rust == 'true' || steps.changes.outputs.guest == 'true' || steps.changes.outputs.dispatch == 'true'
+        if: needs.native-changes.outputs.rust == 'true' || needs.native-changes.outputs.guest == 'true' || needs.native-changes.outputs.dispatch == 'true'
         run: scripts/cargo_with_space.sh build --release --manifest-path proxy/Cargo.toml --locked --bin safeyolo
 
       - name: Validate the Dispatch publication tree
-        if: steps.changes.outputs.rust == 'true' || steps.changes.outputs.dispatch == 'true'
+        if: needs.native-changes.outputs.rust == 'true' || needs.native-changes.outputs.dispatch == 'true'
         run: proxy/target/release/safeyolo dispatch check-site
 
       - name: Test workflow, fixture, deletion, and blackbox runner boundaries
@@ -478,14 +516,14 @@ jobs:
             tests/test_workflow_action_pins.py
 
       - name: Test current native Coord fixture boundaries
-        if: steps.changes.outputs.rust == 'true'
+        if: needs.native-changes.outputs.rust == 'true'
         env:
           SAFEYOLO_NATIVE_CLI: ${{ github.workspace }}/proxy/target/release/safeyolo
           SAFEYOLO_RUST_PROXY: ${{ github.workspace }}/proxy/target/release/safeyolo-proxy
         run: uv run --frozen pytest -q tests/test_proxy_rust_coord_fixture.py
 
       - name: Test guest command staging and bounded native recovery
-        if: steps.changes.outputs.guest == 'true'
+        if: needs.native-changes.outputs.guest == 'true'
         env:
           SAFEYOLO_GUEST_HELPER: ${{ github.workspace }}/guest/command/target/release/safeyolo-guest
         run: |
@@ -493,7 +531,7 @@ jobs:
             cli/tests/test_vm_recovery_recipe.py
 
       - name: Test installed native policy commands
-        if: steps.changes.outputs.rust == 'true'
+        if: needs.native-changes.outputs.rust == 'true'
         run: |
           scripts/cargo_with_space.sh build --release --manifest-path proxy/Cargo.toml --locked --bin safeyolo --bin safeyolo-coord --bin safeyolo-proxy
           uv run --frozen pytest -v tests/proxy_contracts/test_native_policy_cli.py \
@@ -508,29 +546,36 @@ jobs:
           uv run --frozen pytest -q tests/test_guest_acquisition.py tests/test_guest_upgrade.py tests/test_component_upgrade.py tests/test_linux_host.py --basetemp "$RUNNER_TEMP/guest-selection"
 
       - name: Retain runtime preparation and installed policy diagnostics
-        if: always() && steps.changes.outputs.rust == 'true'
+        if: always() && needs.native-changes.outputs.rust == 'true'
         uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
         with:
           name: native-policy-diagnostics
           path: |
             ${{ runner.temp }}/gvisor-preparation.log
+            ${{ runner.temp }}/runtime-qualification/package-info
+            ${{ runner.temp }}/runtime-qualification/SHA256SUMS
+            ${{ runner.temp }}/runtime-qualification/*/reports/
+            ${{ runner.temp }}/uds-host-package/libexec/runsc
+            ${{ runner.temp }}/uds-host-package/libexec/gvisor-bin/gvisor_sentry
+            ${{ runner.temp }}/uds-host-package/libexec/gvisor-bin/gvisor-sentry-prewarmer
+            ${{ runner.temp }}/uds-host-package/libexec/gvisor-bin/runsc-fd-parking
             ${{ runner.temp }}/native-policy.xml
           retention-days: 7
           if-no-files-found: ignore
 
       - name: Test native desktop presentation and host entry
-        if: steps.changes.outputs.rust == 'true'
+        if: needs.native-changes.outputs.rust == 'true'
         working-directory: proxy
         run: ../scripts/cargo_with_space.sh test --release --locked --test desktop_native --test native_host_cli --test native_human_cli
 
       - name: Test changed Linux platform boundaries
-        if: steps.changes.outputs.linux == 'true' && steps.changes.outputs.rust == 'true'
+        if: needs.native-changes.outputs.linux == 'true' && needs.native-changes.outputs.rust == 'true'
         working-directory: proxy
         run: ../scripts/cargo_with_space.sh test --release --locked --test native_runtime_dependency
 
       - name: Prepare the installed Linux share test executable
         id: linux_share_test
-        if: steps.changes.outputs.rust == 'true'
+        if: needs.native-changes.outputs.rust == 'true'
         env:
           SAFEYOLO_CARGO_RESERVE_GIB: "10"
         run: |
@@ -561,7 +606,7 @@ jobs:
           if-no-files-found: error
 
       - name: Test focused native boundaries
-        if: steps.changes.outputs.rust == 'true'
+        if: needs.native-changes.outputs.rust == 'true'
         timeout-minutes: 10
         working-directory: proxy
         env:
@@ -578,12 +623,12 @@ jobs:
           ../scripts/cargo_with_space.sh test --release --locked --test command_centre_lifecycle
 
       - name: Build and save master debug release runtimes
-        if: github.event_name == 'push' && github.ref == 'refs/heads/master' && steps.changes.outputs.rust == 'true'
+        if: github.event_name == 'push' && github.ref == 'refs/heads/master' && needs.native-changes.outputs.rust == 'true'
         run: |
           scripts/cargo_with_space.sh build --manifest-path proxy/Cargo.toml --locked --bin safeyolo-proxy
           uv run --frozen python scripts/build_host_packages.py save-debug --output "$RUNNER_TEMP/host-debug"
       - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
-        if: github.event_name == 'push' && github.ref == 'refs/heads/master' && steps.changes.outputs.rust == 'true'
+        if: github.event_name == 'push' && github.ref == 'refs/heads/master' && needs.native-changes.outputs.rust == 'true'
         with:
           name: host-debug-linux-amd64
           path: ${{ runner.temp }}/host-debug
@@ -594,7 +639,6 @@ jobs:
     name: Overnight native contracts (${{ matrix.os }})
     needs: guest-inputs
     env:
-      CARGO_BUILD_JOBS: "1"
       SAFEYOLO_BUILD_REVISION: ${{ github.event.pull_request.head.sha || github.sha }}
     # Package dispatch reuses the producer without starting full regression.
     if: github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && !inputs.packages_only)
@@ -629,6 +673,24 @@ jobs:
           shared-key: production-focused-pr
           cache-bin: false
           cache-on-failure: true
+          cache-targets: ${{ matrix.os != 'macos-latest' }}
+
+      - name: Restore macOS workspace outputs
+        if: matrix.os == 'macos-latest'
+        id: macos_rust_cache
+        uses: actions/cache/restore@caa296126883cff596d87d8935842f9db880ef25 # v5
+        with:
+          path: |
+            proxy/target
+            guest/command/target
+          key: native-macos-${{ github.job }}-${{ runner.arch }}-${{ env.RUSTUP_TOOLCHAIN }}-${{ hashFiles('**/Cargo.lock', '**/Cargo.toml', '**/rust-toolchain.toml', '**/.cargo/config.toml', '.github/workflows/proxy-rust.yml', 'scripts/cargo_with_space.sh') }}-${{ github.event.pull_request.head.sha || github.sha }}
+          restore-keys: native-macos-${{ github.job }}-${{ runner.arch }}-${{ env.RUSTUP_TOOLCHAIN }}-${{ hashFiles('**/Cargo.lock', '**/Cargo.toml', '**/rust-toolchain.toml', '**/.cargo/config.toml', '.github/workflows/proxy-rust.yml', 'scripts/cargo_with_space.sh') }}-
+
+      - name: Enable macOS incremental compilation
+        if: matrix.os == 'macos-latest'
+        # rust-cache exports zero and removes incremental files from its targets.
+        # Keep macOS targets in the separate cache and override zero afterwards.
+        run: printf 'CARGO_INCREMENTAL=1\n' >> "$GITHUB_ENV"
 
       - name: Check Rust formatting and lint
         working-directory: proxy
@@ -935,27 +997,35 @@ jobs:
             tests/test_blackbox_harness.py::test_lifecycle_owner_prepares_pinned_nats_on_independent_ports
           uv run --frozen pytest -q tests/proxy_contracts --proxy-backend rust
 
+      - name: Save macOS workspace outputs
+        if: ${{ !cancelled() && steps.macos_rust_cache.outcome == 'success' && steps.macos_rust_cache.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@caa296126883cff596d87d8935842f9db880ef25 # v5
+        with:
+          path: |
+            proxy/target
+            guest/command/target
+          key: ${{ steps.macos_rust_cache.outputs.cache-primary-key }}
+
   macos-pr:
     name: Relevant macOS platform checks
-    needs: focused-pr
-    if: needs.focused-pr.outputs.macos == 'true'
+    needs: native-changes
+    if: needs.native-changes.outputs.macos == 'true'
     runs-on: macos-latest
     env:
-      CARGO_BUILD_JOBS: "1"
       SAFEYOLO_BUILD_REVISION: ${{ github.event.pull_request.head.sha || github.sha }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
       - name: Install the pinned Rust toolchain
-        if: needs.focused-pr.outputs.rust == 'true'
+        if: needs.native-changes.outputs.rust == 'true'
         working-directory: proxy
         run: |
           rustup show active-toolchain
           printf 'RUSTUP_TOOLCHAIN=%s\n' "$(rustup show active-toolchain | awk '{print $1}')" >> "$GITHUB_ENV"
 
       - name: Restore Rust dependency cache
-        if: needs.focused-pr.outputs.rust == 'true'
+        if: needs.native-changes.outputs.rust == 'true'
         uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           cmd-format: bash "${{ github.workspace }}/scripts/rust_cache_command.sh" {0}
@@ -965,6 +1035,22 @@ jobs:
           shared-key: production-focused-pr
           cache-bin: false
           cache-on-failure: true
+          cache-targets: false
+
+      - name: Restore macOS workspace outputs
+        if: needs.native-changes.outputs.rust == 'true'
+        id: macos_rust_cache
+        uses: actions/cache/restore@caa296126883cff596d87d8935842f9db880ef25 # v5
+        with:
+          path: |
+            proxy/target
+            guest/command/target
+          key: native-macos-${{ github.job }}-${{ runner.arch }}-${{ env.RUSTUP_TOOLCHAIN }}-${{ hashFiles('**/Cargo.lock', '**/Cargo.toml', '**/rust-toolchain.toml', '**/.cargo/config.toml', '.github/workflows/proxy-rust.yml', 'scripts/cargo_with_space.sh') }}-${{ github.event.pull_request.head.sha || github.sha }}
+          restore-keys: native-macos-${{ github.job }}-${{ runner.arch }}-${{ env.RUSTUP_TOOLCHAIN }}-${{ hashFiles('**/Cargo.lock', '**/Cargo.toml', '**/rust-toolchain.toml', '**/.cargo/config.toml', '.github/workflows/proxy-rust.yml', 'scripts/cargo_with_space.sh') }}-
+
+      - name: Enable macOS incremental compilation
+        if: needs.native-changes.outputs.rust == 'true'
+        run: printf 'CARGO_INCREMENTAL=1\n' >> "$GITHUB_ENV"
 
       - name: Install uv
         uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
@@ -979,25 +1065,34 @@ jobs:
         run: |
           uv run --frozen pytest -q cli/tests/test_vm_control.py cli/tests/test_vm_diagnostics.py
       - name: Test changed native platform boundaries
-        if: needs.focused-pr.outputs.rust == 'true'
+        if: needs.native-changes.outputs.rust == 'true'
         working-directory: proxy
         run: ../scripts/cargo_with_space.sh test --release --locked --test native_runtime_dependency --test native_host_cli --test native_host_identity
       - name: Compile the Hyperlight host adapter on macOS
-        if: needs.focused-pr.outputs.rust == 'true'
+        if: needs.native-changes.outputs.rust == 'true'
         run: |
           scripts/cargo_with_space.sh fmt --manifest-path jobs/hyperlight-host/Cargo.toml -- --check
           scripts/cargo_with_space.sh clippy --locked --all-targets --manifest-path jobs/hyperlight-host/Cargo.toml -- -D warnings
           scripts/cargo_with_space.sh test --locked --manifest-path jobs/hyperlight-host/Cargo.toml
       - name: Build and save master debug release runtimes
-        if: github.event_name == 'push' && github.ref == 'refs/heads/master' && needs.focused-pr.outputs.rust == 'true'
+        if: github.event_name == 'push' && github.ref == 'refs/heads/master' && needs.native-changes.outputs.rust == 'true'
         run: |
           scripts/cargo_with_space.sh build --manifest-path proxy/Cargo.toml --locked --bin safeyolo-proxy
           make -C vm PROFILE=development build
           uv run --frozen python scripts/build_host_packages.py save-debug --output "$RUNNER_TEMP/host-debug"
       - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
-        if: github.event_name == 'push' && github.ref == 'refs/heads/master' && needs.focused-pr.outputs.rust == 'true'
+        if: github.event_name == 'push' && github.ref == 'refs/heads/master' && needs.native-changes.outputs.rust == 'true'
         with:
           name: host-debug-darwin-arm64
           path: ${{ runner.temp }}/host-debug
           retention-days: 7
           if-no-files-found: ignore
+
+      - name: Save macOS workspace outputs
+        if: ${{ !cancelled() && steps.macos_rust_cache.outcome == 'success' && steps.macos_rust_cache.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@caa296126883cff596d87d8935842f9db880ef25 # v5
+        with:
+          path: |
+            proxy/target
+            guest/command/target
+          key: ${{ steps.macos_rust_cache.outputs.cache-primary-key }}

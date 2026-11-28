@@ -35,10 +35,10 @@ pub fn help(group: &str) -> &'static str {
             "safeyolo [--instance-dir PATH] support grants [--json]\nsafeyolo [--instance-dir PATH] support verify GRANT TARGET --agent SUPPORT [--home HOME] [--json]\nsafeyolo [--instance-dir PATH] support notices --agent SUPPORT [--home HOME] [--since CURSOR] [--lines NUMBER] [--json]\nsafeyolo [--instance-dir PATH] support result OPERATION_ID --agent SUPPORT [--home HOME] [--output] [--json]\nsafeyolo [--instance-dir PATH] support receipts [--agent TARGET] [--lines NUMBER] [--json]\nsafeyolo [--instance-dir PATH] support receipt|recover OPERATION_ID [--initiator PRINCIPAL] [--output] [--json]\nsafeyolo [--instance-dir PATH] support preview|apply|revoke|report NAME --file PROPOSAL.json [--json]\nSharing permits selected diagnostic/approval reads only. A named approval delegation separately permits bounded Helper decisions. Other Helper work prepares a human decision.\nIf evidence or the model is unavailable, direct policy controls and local logs/diagnose remain usable."
         }
         "logs" => {
-            "safeyolo [--instance-dir PATH] logs [--file PATH ...] [--agent NAME] [--lines NUMBER] [--json]\nsafeyolo [--instance-dir PATH] logs list [--instance ID] [--runtime ID] [--sandbox-run ID] [--file PATH ...] [--agent NAME] [--lines NUMBER] [--json]\nsafeyolo [--instance-dir PATH] logs connection ID --instance ID --runtime ID [--sandbox-run ID] [--file PATH ...] [--capture FILE] [--agent NAME] [--lines NUMBER] [--json]\nsafeyolo [--instance-dir PATH] logs request ID --instance ID --runtime ID [--sandbox-run ID] [--file PATH ...] [--capture FILE] [--agent NAME] [--lines NUMBER] [--json]\nLogs connection/request accept --capture FILE to read existing current pcap:compat metadata. Matches require the selected audit namespace, connection and recorded agent attribution; request observations require the selected request ID. Lower-layer ancestry can be shared input, not exclusive request bytes. Results include audit lines, one-based packet numbers and PCAP packet-header byte offsets. --lines also bounds retained matching connection observations and runtime loss records separately. Missing/unsupported captures remain unavailable; malformed/truncated input and omissions can leave partial evidence. Loss is runtime-wide with unknown connection/request attribution. Synthetic headers are representation, not measured wire behaviour. No payload is returned or capture enabled. EOF does not prove complete evidence.\nWith --capture, prompt-exposure source/model transports also show retained stream chunk counts, observed-byte sums, size ranges and monotonic intervals, grouped by connection/point/layer/direction. Chunk references preserve observation IDs, packet/byte offsets and audit lines. The same observation limit covers selected and correlated connections together. These are connection-wide retained measurements, not exclusive request bytes, anomaly scores or complete coverage. Layers must not be added as application bytes.\nLogs use the configured local audit file unless --file PATH is supplied. Repeat --file for explicitly selected offline inputs; no installed config or API is needed. Each file is validated to EOF and retains the last --lines selected-agent rows (default 100 per file), so total retention is at most input count times --lines. Selected-file pivots identify every input/physical line and duplicate copy, and refuse conflicting event copies or transport owners as join evidence. Input order is not chronological order. Selection and schema validation do not authenticate the producer. Use logs list to discover retained namespaces, agent context, and connection/request/indicator references; --instance and --runtime optionally narrow that listing. It is not live inventory. Unknown attribution and conflicting copies stay distinct from recorded resolved agent context. Pivots require instance and runtime; only validated NSM records can join. Results report the searched line range and available/unavailable recorded links. Prompt exposure correlations explain exact source and source/model transport novelty support, including partial or unavailable evidence. These are connection-wide relationships, not proof of malicious intent or model receipt. Rotation, drops, queued writes and the window can omit evidence. Supporting links are followed once; no bodies are fetched.\nIf evidence or the model is unavailable, direct policy controls and local logs/diagnose remain usable."
+            "safeyolo [--instance-dir PATH] logs [--file PATH ...] [--agent NAME] [--lines NUMBER] [--json]\nsafeyolo [--instance-dir PATH] logs list [--instance ID] [--runtime ID] [--sandbox-run ID] [--file PATH ...] [--agent NAME] [--lines NUMBER] [--json]\nsafeyolo [--instance-dir PATH] logs connection ID --instance ID --runtime ID [--sandbox-run ID] [--file PATH ...] [--capture FILE] [--agent NAME] [--lines NUMBER] [--json]\nsafeyolo [--instance-dir PATH] logs request ID --instance ID --runtime ID [--sandbox-run ID] [--file PATH ...] [--capture FILE] [--agent NAME] [--lines NUMBER] [--json]\nOrdinary log views summarize retained evidence. Guard evaluation is stage evidence, not final authorization or a granted permission. Select --json on ordinary logs or pivots for complete original records, attribution, links and capture metadata. Logs list --json provides complete listing metadata and navigation references. Logs connection/request accept --capture FILE to read existing current pcap:compat metadata. Matches require the selected audit namespace, connection and recorded agent attribution; request observations require the selected request ID. Lower-layer ancestry can be shared input, not exclusive request bytes. Results include audit lines, one-based packet numbers and PCAP packet-header byte offsets. --lines also bounds retained matching connection observations and runtime loss records separately. Missing/unsupported captures remain unavailable; malformed/truncated input and omissions can leave partial evidence. Loss is runtime-wide with unknown connection/request attribution. Synthetic headers are representation, not measured wire behaviour. No payload is returned or capture enabled. EOF does not prove complete evidence.\nWith --capture, prompt-exposure source/model transports also show retained stream chunk counts, observed-byte sums, size ranges and monotonic intervals, grouped by connection/point/layer/direction. Chunk references preserve observation IDs, packet/byte offsets and audit lines. The same observation limit covers selected and correlated connections together. These are connection-wide retained measurements, not exclusive request bytes, anomaly scores or complete coverage. Layers must not be added as application bytes.\nLogs use the configured local audit file unless --file PATH is supplied. Repeat --file for explicitly selected offline inputs; no installed config or API is needed. Each file is validated to EOF and retains the last --lines selected-agent rows (default 100 per file), so total retention is at most input count times --lines. Selected-file pivots identify every input/physical line and duplicate copy, and refuse conflicting event copies or transport owners as join evidence. Input order is not chronological order. Selection and schema validation do not authenticate the producer. Use logs list to discover retained namespaces, agent context, and connection/request/indicator references; --instance and --runtime optionally narrow that listing. It is not live inventory. Unknown attribution and conflicting copies stay distinct from recorded resolved agent context. Pivots require instance and runtime; only validated NSM records can join. Results report the searched line range and available/unavailable recorded links. Prompt exposure correlations explain exact source and source/model transport novelty support, including partial or unavailable evidence. These are connection-wide relationships, not proof of malicious intent or model receipt. Rotation, drops, queued writes and the window can omit evidence. Supporting links are followed once; no bodies are fetched.\nIf evidence or the model is unavailable, direct policy controls and local logs/diagnose remain usable."
         }
         "observations" => {
-            "safeyolo [--instance-dir PATH] observations [--instance ID] [--runtime ID] [--json]\nObservations reads current runtime aggregates. --instance and --runtime check a retained namespace; they do not retrieve historical or per-agent measurements. Reload preserves counters; restart changes the runtime. Reading observations does not enable payload capture or content storage."
+            "safeyolo [--instance-dir PATH] observations [--instance ID] [--runtime ID] [--details] [--json]\nObservations summarizes current runtime aggregates. Use --details for all counters and histograms, or --json for complete structured records. --instance and --runtime check a retained namespace; they do not retrieve historical or per-agent measurements. Reload preserves counters; restart changes the runtime. Reading observations does not enable payload capture or content storage."
         }
         "diagnose" => {
             "safeyolo [--instance-dir PATH] diagnose [--agent NAME] [--json]\nDiagnostics: diagnose reads saved/current policy and audit availability without test traffic.\nagent diagnostics NAME probes the selected runtime/control and reports its next_action.\ndoctor probes host prerequisites and each configured policy pipeline; it does not prove coding-agent readiness.\nIf evidence or the model is unavailable, direct policy controls and local logs/diagnose remain usable."
@@ -138,29 +138,24 @@ fn show_operator_result(kind: &str, value: &Value) -> Result<(), Error> {
         }
         "logs" => {
             field("Audit file", &value["file"]);
-            let show = |events: &[Value]| {
+            let show = |events: &[Value]| -> Result<(), Error> {
                 if events.is_empty() {
                     println!("No retained events in this selection.");
                 }
                 for event in events {
                     let event = event.get("record").unwrap_or(event);
-                    println!(
-                        "{}  {}  {}  {}",
-                        text(&event["ts"]),
-                        text(&event["event"]),
-                        text(&event["agent"]),
-                        text(&event["summary"])
-                    );
+                    show_log_record(event)?;
                 }
+                Ok(())
             };
             if let Some(events) = value["events"].as_array() {
-                show(events);
+                show(events)?;
             }
             if let Some(inputs) = value["inputs"].as_array() {
                 for input in inputs {
                     field("Input", &input["file"]);
                     if let Some(events) = input["events"].as_array() {
-                        show(events);
+                        show(events)?;
                     }
                 }
                 field("Limits", &value["limits"]);
@@ -565,6 +560,168 @@ fn show_decision_evidence(view: &Value) {
     }
 }
 
+// Decision facts have no display-length cap. Supporting model inputs and
+// duplicate projections remain available through explain and explicit JSON.
+fn show_review_fact(label: &str, value: &Value) {
+    let rendered = match value {
+        Value::Null => return,
+        Value::Array(items) if items.is_empty() => return,
+        Value::Array(items) => items
+            .iter()
+            .map(|item| {
+                item.as_str()
+                    .map(str::to_owned)
+                    .unwrap_or_else(|| item.to_string())
+            })
+            .collect::<Vec<_>>()
+            .join("; "),
+        Value::String(value) if value.is_empty() => return,
+        Value::String(value) => value.clone(),
+        _ => value.to_string(),
+    };
+    println!("{label}: {}", safe(&rendered));
+}
+
+fn show_decision_summary(view: &Value) {
+    let assessment = &view["assessment"];
+    if assessment.get("risk_policy").is_none() && assessment.get("availability").is_none() {
+        // Policy adoption still needs its exact source diff and consequences;
+        // other assessment owners retain their existing decision evidence.
+        for (label, field) in [
+            ("SafeYolo assessment (includes request data)", "assessment"),
+            ("Policy and reviewed guidance", "guidance"),
+        ] {
+            if let Some(value) = view.get(field).filter(|value| !value.is_null()) {
+                println!("{label}:");
+                show_evidence_fields(value, 2);
+            }
+        }
+        if view["assessment_changed"] == true {
+            println!("Assessment changed since request. Review current state before deciding.");
+        }
+        return;
+    }
+    println!("SafeYolo assessment:");
+    show_review_fact("  Availability", &assessment["availability"]);
+    show_review_fact("  Assessment", &assessment["message"]);
+    show_review_fact(
+        "  Current risk policy",
+        &assessment["risk_policy"]["effect"],
+    );
+    show_review_fact("  Possible effects", &assessment["enables"]);
+    for direct in assessment["model"]["direct"]
+        .as_array()
+        .into_iter()
+        .flatten()
+    {
+        if direct["permission"]["proposed"] != true {
+            continue;
+        }
+        show_review_fact("  Proposed operation", &direct["permission"]["operation"]);
+        show_review_fact("  Coverage", &direct["coverage"]);
+        show_review_fact("  Persistent effects", &direct["persistent_effects"]);
+        show_review_fact("  Execution authority", &direct["execution_authority"]);
+        show_review_fact("  Unresolved effects", &direct["unresolved_effects"]);
+        show_review_fact("  Unresolved conditions", &direct["unresolved_conditions"]);
+    }
+    for (name, rule) in assessment["model"]["rules"]
+        .as_object()
+        .into_iter()
+        .flatten()
+    {
+        println!(
+            "  Combined effect {}: {}",
+            safe(name),
+            safe(text(&rule["status"]))
+        );
+        if rule["status"] != "non_match" {
+            show_review_fact("    Consequence", &rule["consequence"]);
+            show_review_fact(
+                "    Unverified prerequisites",
+                &rule["unverified_prerequisites"],
+            );
+            show_review_fact("    Limits", &rule["gaps"]);
+        }
+    }
+    for source in [assessment, &assessment["model"]] {
+        show_review_fact("  Unresolved conditions", &source["unresolved_conditions"]);
+        show_review_fact("  Limits", &source["limitations"]);
+    }
+    if let Some(authority) = assessment.get("docker_authority") {
+        println!("  Docker authority:");
+        show_evidence_fields(authority, 4);
+    }
+    println!("Policy and reviewed guidance:");
+    for field in ["other_controls", "uncertainty"] {
+        show_review_fact(
+            &format!("  {}", field.replace('_', " ")),
+            &view["guidance"][field],
+        );
+    }
+    show_review_fact(
+        "  Reviewed risk",
+        &view["guidance"]["reviewed_risk"]["description"],
+    );
+    if view["guidance"]["reviewed_risk"]["irreversible"] == true {
+        println!("  Reviewed risk: irreversible effects are possible.");
+    }
+    for alternative in assessment["alternatives"].as_array().into_iter().flatten() {
+        println!(
+            "  Alternative {} (goal suitability unverified):",
+            safe(text(&alternative["id"]))
+        );
+        for step in alternative["required_access"]
+            .as_array()
+            .into_iter()
+            .flatten()
+        {
+            println!(
+                "    {}: {}",
+                safe(text(&step["operation"])),
+                safe(text(&step["access"]))
+            );
+        }
+        // Native recipes use access/steps rather than required_access.
+        show_review_fact("    Access", &alternative["access"]);
+        show_review_fact(
+            "    Unverified prerequisites",
+            &alternative["unverified_prerequisites"],
+        );
+        show_review_fact("    Limits", &alternative["limitations"]);
+    }
+    if view["assessment_changed"] == true {
+        println!("Assessment changed since request. Review current state before deciding.");
+    }
+}
+
+fn show_approval_outcome(view: &Value) -> Result<(), Error> {
+    println!(
+        "Request {}: {}",
+        safe(text(&view["request_id"])),
+        safe(text(&view["status"]))
+    );
+    if view["result"]["status"] != view["status"] {
+        show_review_fact("Recorded outcome", &view["result"]["status"]);
+    }
+    show_review_fact("Selected option", &view["option"]);
+    show_review_fact("Next action", &view["result"]["next_action"]);
+    show_review_fact("Diagnostic", &view["result"]["diagnostic"]["message"]);
+    if !matches!(view["status"].as_str(), Some("approved" | "rejected")) {
+        show_review_fact("Decision not applied", &view["effect"]);
+        println!(
+            "Inspect this request again before deciding; no decision is retried automatically."
+        );
+    }
+    if let Some(url) = view["operator_preview"]["url"].as_str() {
+        println!(
+            "Operator preview: {}\nUnlock code: {}",
+            safe(url),
+            safe(text(&view["operator_preview"]["unlock_code"]))
+        );
+    }
+    Ok(())
+}
+
 /// Reuse the canonical approval renderer and its display-control escaping.
 pub fn show_policy_assessment(view: &Value) {
     println!("Trusted policy consequences:");
@@ -727,16 +884,29 @@ fn show_explanation(view: &Value) -> Result<(), Error> {
 
 pub(crate) fn show_approval(view: &Value) -> Result<(), Error> {
     println!(
-        "Request: {}\nStatus: {}\nSafeYolo effect: {}",
+        "Instance configuration: {}",
+        safe(&host_platform::config_path().display().to_string())
+    );
+    println!(
+        "Request: {}\nStatus: {}\nAgent: {} | Destination: {}",
         safe(text(&view["request_id"])),
         safe(text(&view["status"])),
-        safe(text(&view["effect"]))
+        safe(text(&view["agent"])),
+        safe(text(&view["approval"]["target"]))
     );
     if let Some(id) = view["approval_id"].as_str() {
         println!("Approval: {}", safe(id));
     }
     show_request_history(view)?;
-    show_decision_evidence(view);
+    show_decision_summary(view);
+    let effect_is_option = view["options"].as_array().is_some_and(|options| {
+        options
+            .iter()
+            .any(|option| option["effect"] == view["effect"])
+    });
+    if !effect_is_option {
+        show_review_fact("SafeYolo effect", &view["effect"]);
+    }
 
     if view["action"]["kind"] == "diagnostic_disclosure" {
         println!("Local read-only diagnostic disclosure:");
@@ -762,10 +932,21 @@ pub(crate) fn show_approval(view: &Value) -> Result<(), Error> {
         if let Some(audit) = view["audit_status"].as_str() {
             println!("Audit: {}", safe(audit));
         }
+        if view["action"]["action_id"] == crate::operator_actions::WEB_PRESENT {
+            println!("SafeYolo operator action: Publish agent web port");
+            show_review_fact("Guest port", &view["action"]["parameters"]["guest_port"]);
+            show_review_fact("Audience", &view["action"]["parameters"]["audience"]);
+            show_review_fact(
+                "Tailnet port",
+                &view["action"]["parameters"]["tailnet_port"],
+            );
+        } else {
+            println!("SafeYolo operator action: Present agent desktop");
+            show_review_fact("Presentation", &view["action"]["presentation"]);
+        }
         println!(
-            "SafeYolo operator action: Present agent desktop\nTarget: {}\nPresentation: {}\nPreview lifetime: {} seconds",
+            "Target: {}\nPreview lifetime: {} seconds",
             safe(text(&view["action"]["agent"])),
-            safe(text(&view["action"]["presentation"])),
             view["action"]["parameters"]["ttl_seconds"]
         );
         if let Some(url) = view["action"]["parameters"]["browser_url"].as_str() {
@@ -827,8 +1008,9 @@ pub(crate) fn show_approval(view: &Value) -> Result<(), Error> {
     if let Some(options) = view["options"].as_array() {
         for option in options {
             println!(
-                "Option {}: {}",
+                "Option {} ({}): {}",
                 safe(text(&option["id"])),
+                safe(text(&option["status"])),
                 safe(text(&option["effect"]))
             );
         }
@@ -843,6 +1025,13 @@ pub(crate) fn show_approval(view: &Value) -> Result<(), Error> {
         );
     }
     if let Some(reason) = view["untrusted_reason_text"].as_str() {
+        // Escalation records wrap the agent's reason with source/context data.
+        // The ordinary view shows that reason; explicit JSON retains the wrapper.
+        let parsed = serde_json::from_str::<Value>(reason).ok();
+        let reason = parsed
+            .as_ref()
+            .and_then(|value| value["context"]["reason"].as_str())
+            .unwrap_or(reason);
         // A quoted JSON string stays visibly separate, including forged
         // Markdown/HTML headings and all terminal controls.
         println!(
@@ -855,6 +1044,22 @@ pub(crate) fn show_approval(view: &Value) -> Result<(), Error> {
                 "Helper reason"
             },
             context_json(&json!(reason))?
+        );
+    }
+    if !view["result"].is_null() {
+        if view["result"]["status"] != view["status"] {
+            show_review_fact("Recorded outcome", &view["result"]["status"]);
+        }
+        show_review_fact("Next action", &view["result"]["next_action"]);
+    }
+    if let Some(id) = view["approval_id"].as_str() {
+        println!(
+            "Full evidence: safeyolo --config {} approvals explain {} (or show {} --json).",
+            safe(&crate::host_lifecycle::shell_quote(
+                &host_platform::config_path().display().to_string()
+            )),
+            safe(id),
+            safe(id)
         );
     }
     Ok(())
@@ -1105,11 +1310,7 @@ pub(crate) async fn review_pending(root: &Path, agent: &str) -> Result<(), Error
         }
         println!("SafeYolo host — pending requests for {}", safe(agent));
         for (index, entry) in entries.iter().enumerate() {
-            println!(
-                "{}: {}",
-                index + 1,
-                serde_json::to_string(&entry["summary"])?
-            );
+            println!("{}: {}", index + 1, safe(text(&entry["summary"])));
             show_request_history(entry)?;
         }
         let Some(answer) = crate::host_launch::input(
@@ -1231,7 +1432,7 @@ pub(crate) async fn review_pending(root: &Path, agent: &str) -> Result<(), Error
             if option.as_deref() == Some("") {
                 continue;
             }
-            show_approval(
+            show_approval_outcome(
                 &resolve_preview(root, &view, decision, Some(agent), option.as_deref()).await?,
             )?;
             break;
@@ -1482,20 +1683,12 @@ fn show_log_listing(value: &Value) -> Result<(), Error> {
                 context_json(&group["agent"])?,
                 text(&group["context"])
             );
-            println!(
-                "Sandbox run: {} | Run context: {}",
-                context_json(&group["sandbox_run"])?,
-                text(&group["run_context"])
-            );
+            show_log_run(&group["sandbox_run"], &group["run_context"])?;
             for record in group["records"].as_array().into_iter().flatten() {
+                show_log_record(record)?;
                 println!(
-                    "  {} | Decision: {} | Event ID: {} | Time: {} | Locations: {}\n    {}",
-                    text(&record["event"]),
-                    context_json(&record["decision"])?,
-                    context_json(&record["event_id"])?,
-                    context_json(&record["ts"])?,
-                    record["locations"],
-                    context_json(&record["summary"])?
+                    "    Locations: {}",
+                    log_record_locations(&record["locations"])
                 );
                 for reference in record["references"].as_array().into_iter().flatten() {
                     println!(
@@ -1506,14 +1699,107 @@ fn show_log_listing(value: &Value) -> Result<(), Error> {
                     );
                 }
                 if record.get("indicator").is_some() {
-                    println!("    Indicator: {}", context_json(&record["indicator"])?);
+                    println!(
+                        "    Indicator: {}",
+                        escaped_log_text(text(&record["indicator"]["indicator_type"]))?
+                    );
                 }
             }
         }
     }
     println!(
-        "\nUse logs connection ID or logs request ID with the listed --instance ID --runtime ID, optional --agent NAME --sandbox-run RUN_ID, and the same --file/--lines selection. IDs above use JSON escaping; decode escapes when supplying an argument."
+        "\nUse logs connection ID or logs request ID with the listed --instance ID --runtime ID, optional --agent NAME --sandbox-run RUN_ID, and the same --file/--lines selection. IDs above use JSON escaping; decode escapes when supplying an argument. Select --json for complete listing metadata. Pivots include complete original records and evidence with --json."
     );
+    Ok(())
+}
+
+fn escaped_log_text(value: &str) -> Result<String, Error> {
+    let encoded = context_json(&json!(value))?;
+    // context_json always returns an ASCII JSON string for this scalar input.
+    Ok(encoded[1..encoded.len() - 1].to_owned())
+}
+
+fn show_log_run(run: &Value, context: &Value) -> Result<(), Error> {
+    print!("Run context: {}", escaped_log_text(text(context))?);
+    if let Some(id) = run["run_id"].as_str() {
+        print!(" | Sandbox run: {}", escaped_log_text(id)?);
+    }
+    if let Some(id) = run["agent_id"].as_str() {
+        print!(" | Agent ID: {}", escaped_log_text(id)?);
+    }
+    println!();
+    Ok(())
+}
+
+fn log_record_line(line: &Value) -> String {
+    if let (Some(input), Some(line)) = (line["input"].as_u64(), line["line"].as_u64()) {
+        format!("input {input} line {line}")
+    } else {
+        line.as_u64()
+            .map(|line| line.to_string())
+            .unwrap_or_else(|| "unavailable".into())
+    }
+}
+
+fn log_record_locations(locations: &Value) -> String {
+    let Some(locations) = locations.as_array() else {
+        return "unavailable".into();
+    };
+    if locations.is_empty() {
+        return "none".into();
+    }
+    locations
+        .iter()
+        .map(log_record_line)
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+fn show_log_record(record: &Value) -> Result<(), Error> {
+    print!(
+        "  {}  {} - {}",
+        escaped_log_text(text(&record["ts"]))?,
+        escaped_log_text(text(&record["event"]))?,
+        escaped_log_text(text(&record["summary"]))?
+    );
+    if let Some(agent) = record["agent"].as_str() {
+        print!(" | Agent: {}", escaped_log_text(agent)?);
+    }
+    if let Some(decision) = record["decision"].as_str() {
+        print!(" | Decision: {}", escaped_log_text(decision)?);
+    }
+    let details = &record["details"];
+    match record["event"].as_str() {
+        Some("network.connection") => {
+            for (label, key) in [
+                ("State", "state"),
+                ("Error", "error"),
+                ("Target", "requested_target"),
+            ] {
+                if let Some(value) = details[key].as_str() {
+                    print!(" | {label}: {}", escaped_log_text(value)?);
+                }
+            }
+        }
+        Some("security.network_guard.evaluated" | "security.credential_guard.evaluated") => {
+            if let Some(outcome) = details["outcome"].as_str() {
+                print!(" | Guard evaluation: {}", escaped_log_text(outcome)?);
+            }
+        }
+        Some("traffic.request_outcome") => {
+            if let Some(status) = details["status"].as_u64() {
+                print!(" | HTTP status: {status}");
+            }
+            if let Some(request) = record["request_id"].as_str() {
+                print!(" | Request: {}", escaped_log_text(request)?);
+            }
+        }
+        _ => {}
+    }
+    println!();
+    if let Some(id) = record["event_id"].as_str() {
+        println!("    Event ID: {}", escaped_log_text(id)?);
+    }
     Ok(())
 }
 
@@ -1526,17 +1812,17 @@ fn show_log_pivot(value: &Value) -> Result<(), Error> {
             .as_str()
             .map(safe)
             .unwrap_or_else(|| "explicitly selected files".into()),
-        safe(text(&query["instance_id"])),
-        safe(text(&query["runtime_id"])),
-        safe(text(&query["kind"])),
-        safe(text(&query["id"])),
+        escaped_log_text(text(&query["instance_id"]))?,
+        escaped_log_text(text(&query["runtime_id"]))?,
+        escaped_log_text(text(&query["kind"]))?,
+        escaped_log_text(text(&query["id"]))?,
         query["agent"]
             .as_str()
             .map(safe)
             .unwrap_or_else(|| "all".into())
     );
     if let Some(run) = query["sandbox_run_id"].as_str() {
-        println!("Sandbox run selection: {}", safe(run));
+        println!("Sandbox run selection: {}", escaped_log_text(run)?);
     }
     if let Some(inputs) = value["inputs"].as_array() {
         for input in inputs {
@@ -1574,52 +1860,103 @@ fn show_log_pivot(value: &Value) -> Result<(), Error> {
         if correlation["warning"]["status"] == "investigate" {
             println!(
                 "\nInvestigation warning: {}",
-                safe(text(&correlation["warning"]["reason"]))
+                escaped_log_text(text(&correlation["warning"]["reason"]))?
             );
         }
         println!(
             "\nPrompt exposure correlation from line {} ({}):",
-            correlation["exposure_line"],
+            log_record_line(&correlation["exposure_line"]),
             text(&correlation["status"])
         );
-        print_json(correlation)?;
+        println!("{}", escaped_log_text(text(&correlation["reason"]))?);
+        println!("{}", escaped_log_text(text(&correlation["meaning"]))?);
+        println!(
+            "Source indication: {} | Novelty evidence: {}",
+            escaped_log_text(text(&correlation["source"]["status"]))?,
+            escaped_log_text(text(&correlation["novelty_status"]))?
+        );
+        for (label, key) in [
+            ("Source transport", "source_transport"),
+            ("Model transport", "model_transport"),
+        ] {
+            println!(
+                "{label}: {} - {}",
+                escaped_log_text(text(&correlation[key]["status"]))?,
+                escaped_log_text(text(&correlation[key]["reason"]))?
+            );
+        }
     }
     for entry in value["records"].as_array().into_iter().flatten() {
-        println!("\nLine {} ({}):", entry["line"], text(&entry["selection"]));
         println!(
-            "Sandbox run: {} | Run context: {}",
-            context_json(&entry["sandbox_run"])?,
-            text(&entry["run_context"])
+            "\nLine {} ({}):",
+            log_record_line(&entry["line"]),
+            text(&entry["selection"])
         );
-        // JSON escapes control characters and preserves original attribution,
-        // timestamps, event IDs and evidence instead of rebuilding an event.
+        show_log_run(&entry["sandbox_run"], &entry["run_context"])?;
         if let Some(locations) = entry.get("locations") {
             println!(
                 "Locations: {}; conflicting copy or owner: {}",
-                serde_json::to_string(locations)?,
+                log_record_locations(locations),
                 entry["conflicting"]
             );
         }
-        print_json(&entry["record"])?;
+        show_log_record(&entry["record"])?;
     }
     if value["records"].as_array().is_some_and(Vec::is_empty) {
         println!("No related validated NSM records in the searched window.");
     }
     for link in value["links"].as_array().into_iter().flatten() {
         println!(
-            "Link from line {} {}: {}",
-            link["from_line"],
-            text(&link["field"]),
-            serde_json::to_string(link)?
+            "Link from line {} {} to {} {}: {} (supporting lines {})",
+            log_record_line(&link["from_line"]),
+            escaped_log_text(text(&link["field"]))?,
+            escaped_log_text(text(&link["event"]))?,
+            escaped_log_text(text(&link["connection_id"]))?,
+            escaped_log_text(text(&link["status"]))?,
+            log_record_locations(&link["record_lines"])
         );
+        if let Some(lines) = link["conflicting_record_lines"]
+            .as_array()
+            .filter(|lines| !lines.is_empty())
+        {
+            println!(
+                "  Conflicting supporting lines: {}",
+                lines
+                    .iter()
+                    .map(log_record_line)
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            );
+        }
     }
     if let Some(capture) = value.get("capture") {
         println!(
             "\nSelected capture metadata ({}):",
             text(&capture["status"])
         );
-        print_json(capture)?;
+        println!("File: {}", escaped_log_text(text(&capture["file"]))?);
+        println!(
+            "Scan: {}",
+            escaped_log_text(text(&capture["scan"]["status"]))?
+        );
+        if let Some(reason) = capture["scan"]["reason"].as_str() {
+            println!("{}", escaped_log_text(reason)?);
+        }
+        if let Some(reason) = capture["reason"].as_str() {
+            println!("{}", escaped_log_text(reason)?);
+        }
+        println!(
+            "Retained observations: {} | Runtime loss records: {}\nOmitted observations: {} | Omitted loss records: {}",
+            capture["observations"].as_array().map_or(0, Vec::len),
+            capture["loss"].as_array().map_or(0, Vec::len),
+            capture["omitted_connection_observations"],
+            capture["omitted_runtime_loss_records"]
+        );
+        println!("{}", escaped_log_text(text(&capture["limits"]))?);
     }
+    println!(
+        "\nSelect --json for complete original records, attribution, links and capture metadata."
+    );
     Ok(())
 }
 
@@ -1927,7 +2264,7 @@ async fn inspect(root: &Path, options: &Options) -> Result<(), Error> {
                 "approve" | "reject" => {
                     let view = approval(root, rest, Some(name)).await?;
                     show_approval(&view)?;
-                    show_approval(&resolve_preview(root, &view, command, Some(name), None).await?)
+                    show_approval_outcome(&resolve_preview(root, &view, command, Some(name), None).await?)
                 }
                 "share" => {
                     let (id, helper) = rest.split_once(' ').ok_or("share requires ID HELPER")?;
@@ -2254,7 +2591,14 @@ async fn run_inner(root: &Path, args: &[String]) -> Result<(), Error> {
         }
         Ok(())
     } else if args[0] == "approvals" && !options.json && value.get("action").is_some() {
-        show_approval(&value)
+        if matches!(
+            options.positional.first().map(String::as_str),
+            Some("approve" | "reject")
+        ) {
+            show_approval_outcome(&value)
+        } else {
+            show_approval(&value)
+        }
     } else if options.json {
         print_json(&value)
     } else {

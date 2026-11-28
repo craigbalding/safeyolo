@@ -131,15 +131,16 @@ pub fn policy(value: &Value) -> Result<(), Error> {
             let rows = hosts
                 .iter()
                 .map(|(host, rule)| {
+                    let setting = |key| rule.get(key).map(text).unwrap_or_else(|| "not set".into());
                     vec![
                         text(&Value::String(host.clone())),
-                        text(&rule["egress"]),
+                        setting("egress"),
                         rule["allow"]
                             .as_array()
                             .map(|values| values.iter().map(text).collect::<Vec<_>>().join(", "))
-                            .unwrap_or_else(|| "inherited".into()),
-                        text(&rule["unknown_creds"]),
-                        text(&rule["rate"]),
+                            .unwrap_or_else(|| "not set".into()),
+                        setting("unknown_creds"),
+                        setting("rate"),
                     ]
                 })
                 .collect::<Vec<_>>();
@@ -152,6 +153,9 @@ pub fn policy(value: &Value) -> Result<(), Error> {
                     "RATE",
                 ],
                 &rows,
+            );
+            println!(
+                "Not set: this host row adds no setting; other matching rules and defaults still apply."
             );
         }
         if let Some(agents) = policy["agents"].as_object() {

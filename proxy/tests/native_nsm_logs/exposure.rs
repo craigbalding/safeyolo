@@ -372,8 +372,8 @@ async fn native_correlation(supervised: bool) {
         "Investigation warning: Investigate:",
         "first destination observation",
         "merit investigation together",
-        "source_transport",
-        "model_transport",
+        "Source transport:",
+        "Model transport:",
         "connection-wide",
         "causal compromise",
     ] {

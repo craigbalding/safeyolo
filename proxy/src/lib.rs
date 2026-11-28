@@ -64,6 +64,7 @@ pub mod host_execution;
 mod host_launch;
 mod host_lifecycle;
 mod host_mounts;
+pub mod host_root;
 mod host_runs;
 mod host_sudo;
 pub mod instance;

@@ -36,7 +36,7 @@ def prepared_runsc(tmp_path):
         pytest.skip("gVisor runtime acquisition requires Linux")
     directory = tmp_path / "prepared-runsc"
     (directory / "gvisor-bin").mkdir(parents=True)
-    executable(directory / "runsc", "runsc version release-20261005.0-safeyolo.1")
+    executable(directory / "runsc", "runsc version release-20261005.0-safeyolo.2")
     for name in ("gvisor_sentry", "gvisor-sentry-prewarmer", "runsc-fd-parking"):
         shutil.copy2(directory / "runsc", directory / "gvisor-bin" / name)
     return directory
@@ -80,7 +80,7 @@ def runsc_build_inputs(
     (scripts / "gvisor").mkdir(parents=True)
     for name in ("native_package.sh", "acquire_runsc.sh"):
         shutil.copy2(REPO / "scripts" / name, scripts / name)
-    for name in ("nofollow.patch", "portforward.patch"):
+    for name in ("nofollow.patch", "portforward.patch", "host-uds-paths.patch"):
         shutil.copy2(REPO / "scripts/gvisor" / name, scripts / "gvisor" / name)
     build_calls = tmp_path / "build-calls"
     (scripts / "build_runsc.sh").write_text(
@@ -121,12 +121,16 @@ def test_runsc_acquisition_reuses_its_build_and_refuses_corrupt_cached_companion
     assert not (tmp_path / "corrupt").exists()
     assert build_calls.read_text().splitlines() == ["build"]
 
-    # A provider repair must not reuse the cached runtime without that patch.
-    patch = scripts / "gvisor/portforward.patch"
-    patch.write_bytes(patch.read_bytes() + b"\n")
-    result = run("bash", str(scripts / "acquire_runsc.sh"), str(tmp_path / "repaired"))
-    assert result.returncode == 0, result.stderr
-    assert build_calls.read_text().splitlines() == ["build", "build"]
+    # Every changed patch or build recipe selects a fresh cache component.
+    for index, name in enumerate(("gvisor/nofollow.patch", "gvisor/portforward.patch",
+                                  "gvisor/host-uds-paths.patch", "build_runsc.sh"), 2):
+        source = scripts / name
+        source.write_bytes(source.read_bytes() + b"\n")
+        result = run("bash", str(scripts / "acquire_runsc.sh"), str(tmp_path / f"repaired-{index}"))
+        assert result.returncode == 0, result.stderr
+        assert build_calls.read_text().splitlines() == ["build"] * index
+    components = list((cache / "safeyolo/gvisor/release-20261005.0-safeyolo.2").iterdir())
+    assert len(components) == 5 and all(len(path.name) == 64 for path in components)
 
 
 @pytest.mark.parametrize("failure", ["http", "reset"])
@@ -758,7 +762,7 @@ def package_inputs(tmp_path, request, monkeypatch):
     shutil.copy2(shutil.which("tmux"), runtime / "tmux")
     runsc = tmp_path / "gvisor"
     (runsc / "gvisor-bin").mkdir(parents=True)
-    executable(runsc / "runsc", "runsc version release-20261005.0-safeyolo.1")
+    executable(runsc / "runsc", "runsc version release-20261005.0-safeyolo.2")
     for name in ("gvisor-bin/checkpointgofer", "gvisor-bin/gvisor-sentry-prewarmer",
                  "gvisor-bin/gvisor_sentry", "gvisor-bin/runsc-fd-parking", "gvisor-bin/runsc-metric-server"):
         shutil.copy2(runsc / "runsc", runsc / name)
@@ -1150,7 +1154,7 @@ def test_native_bundle_metadata_records_guest_discovery_without_pinning_an_archi
     assert set(fields) == {"source_commit", "profile", "platform", "minimum_runtime",
                            "guest_compatibility", "guest_repository", "guest_discovery_tag",
                            "runsc_version", "runsc_source", "runsc_origin"}
-    assert fields["runsc_version"] == "release-20261005.0-safeyolo.1"
+    assert fields["runsc_version"] == "release-20261005.0-safeyolo.2"
     assert fields["runsc_origin"] == "bundled"
     assert fields["guest_compatibility"] == "v1"
     assert fields["guest_repository"] == "ghcr.io/craigbalding/safeyolo-guest"

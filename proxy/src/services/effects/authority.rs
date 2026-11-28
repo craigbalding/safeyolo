@@ -355,7 +355,7 @@ fn project(
                     .iter()
                     .filter(|grant| {
                         grant.method.eq_ignore_ascii_case(&operation.method)
-                            && grant.delegated.as_ref().is_none_or(|encoded| {
+                            && grant.delegated.as_ref().is_some_and(|encoded| {
                                 serde_json::from_str::<crate::policy::delegation::IssuedAccess>(
                                     encoded,
                                 )

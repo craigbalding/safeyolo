@@ -176,8 +176,8 @@ async fn correlation_labels_source_and_model_connections_without_lifecycle_combi
         let text = String::from_utf8(output.stdout).unwrap();
         for expected in [
             "Prompt exposure correlation",
-            "source_transport",
-            "model_transport",
+            "Source transport:",
+            "Model transport:",
             "connection-wide",
             "malicious intent",
             "model receipt",

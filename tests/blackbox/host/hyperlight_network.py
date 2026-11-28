@@ -922,7 +922,7 @@ def exercise(args):
                       "cli_sha256": digest(args.cli), "proxy_sha256": digest(args.proxy)}
             save(args.scratch / "result.json", report)
             with (args.scratch / "proxy.log").open("wb") as log:
-                instance.proxy = subprocess.Popen([str(args.proxy), "--config", str(args.root / "config.toml")],
+                instance.proxy = subprocess.Popen([str(args.proxy), "--config", str(args.root / "config.toml"), "--dangerously-allow-root"],
                                                   stdout=log, stderr=log)
                 try:
                     wait_ready(instance.proxy, args.root, args.admin_port)
