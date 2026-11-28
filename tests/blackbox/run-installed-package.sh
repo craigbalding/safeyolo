@@ -44,6 +44,8 @@ if [[ ${#SECTIONS[@]} != 0 && -z $LANE ]]; then
 fi
 PACKAGE_DIR="$(mktemp -d "${SAFEYOLO_BLACKBOX_STATE_PARENT:-$HOME}/sy-package.XXXXXX")"
 echo "Owned package state: $PACKAGE_DIR"
+# Carry explicit root intent only through this disposable fixture child tree.
+export SAFEYOLO_DANGEROUSLY_ALLOW_ROOT=1
 # The separate test interpreter may be present even on a host with no system Python.
 export PATH="$REPO_ROOT/.venv/bin:$PATH"
 export SAFEYOLO_CONFIG_DIR="$PACKAGE_DIR/prepared"

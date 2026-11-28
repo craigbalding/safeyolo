@@ -133,6 +133,9 @@ def run(selection_path: Path, lane: str, artifacts: Path, sections: list[str], y
         # branch nor a guest tag is consulted by any execution step.
         frozen = artifacts / "selection.json"
         frozen.write_text(json.dumps(selection, indent=2) + "\n")
+        # These children own disposable fixture state. Retained executables
+        # need the existing environment form rather than a newer CLI argument.
+        environment = dict(os.environ, SAFEYOLO_DANGEROUSLY_ALLOW_ROOT="1")
         section_options = [value for section in sections for value in ("--section", section)]
         if prepared_config is not None:
             if lane != "systrap":
@@ -143,7 +146,7 @@ def run(selection_path: Path, lane: str, artifacts: Path, sections: list[str], y
                        "--install-commit", selection["host"]["source_revision"],
                        "--artifacts", str(artifacts / "guest")]
             command += section_options
-            result = subprocess.run(command, cwd=ROOT, check=False)
+            result = subprocess.run(command, cwd=ROOT, env=environment, check=False)
             report["exit"] = result.returncode
             return report["exit"]
         package = selection_path.parent / selection["host"]["archive"]["name"]
@@ -159,7 +162,7 @@ def run(selection_path: Path, lane: str, artifacts: Path, sections: list[str], y
         options += section_options
         if yes:
             options += ["--yes"]
-        environment = dict(os.environ, SAFEYOLO_BLACKBOX_ARTIFACTS_DIR=str(artifacts),
+        environment.update(SAFEYOLO_BLACKBOX_ARTIFACTS_DIR=str(artifacts),
                            SAFEYOLO_BLACKBOX_INPUT_SELECTION=str(frozen), SAFEYOLO_BLACKBOX_FULL_SECTIONS="1")
         result = subprocess.run([str(ROOT / "tests/blackbox/run-installed-package.sh"), *options],
                                 cwd=ROOT, env=environment, check=False)

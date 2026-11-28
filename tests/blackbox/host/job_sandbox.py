@@ -121,7 +121,8 @@ def interrupt_request(command, root: Path, signal_number: int | None, *, umask=-
     before = job_directories(root)
     records = []
     observed = []
-    with subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, umask=umask) as child:
+    with subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, umask=umask,
+                          env=dict(os.environ, SAFEYOLO_DANGEROUSLY_ALLOW_ROOT="1")) as child:
         deadline = time.monotonic() + 180
         try:
             while child.poll() is None:

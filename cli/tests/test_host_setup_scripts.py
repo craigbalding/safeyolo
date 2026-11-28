@@ -2464,7 +2464,7 @@ def test_shared_skill_has_cross_agent_frontmatter_and_direct_references() -> Non
 
     assert set(metadata) == {"name", "description"}
     assert metadata["name"] == "safeyolo"
-    assert "SafeYolo" in metadata["description"]
+    assert "SafeYOLO" in metadata["description"]
     for reference in (
         "agent-api.md",
         "troubleshooting.md",
@@ -2491,7 +2491,7 @@ def test_lab_controller_skill_is_shared_and_self_contained() -> None:
 
     assert set(metadata) == {"name", "description"}
     assert metadata["name"] == "safeyolo-lab-controller"
-    assert "SafeYolo agent" in metadata["description"]
+    assert "SafeYOLO agent" in metadata["description"]
     for reference in (
         "bootstrap.md",
         "experiment-protocol.md",
@@ -2519,7 +2519,7 @@ def test_factory_skill_is_shared_and_self_contained() -> None:
 
     assert set(metadata) == {"name", "description"}
     assert metadata["name"] == "safeyolo-factory"
-    assert "SafeYolo supervised factories" in metadata["description"]
+    assert "SafeYOLO supervised factories" in metadata["description"]
     assert "before changing a running factory" in metadata["description"]
     assert "sym.runtime_operator_intervention" in body
     for reference in (

@@ -865,7 +865,8 @@ def _native_smoke(args: argparse.Namespace) -> tuple[dict[str, Any], int]:
     report["instance"] = {"config_dir": str(config_dir), "mode": "smoke"}
     env = os.environ.copy()
     env.pop("SAFEYOLO_RUST_PROXY", None)
-    env.update(SAFEYOLO_CONFIG_DIR=str(config_dir), SAFEYOLO_LOGS_DIR=str(_smoke_logs_dir(config_dir)))
+    env.update(SAFEYOLO_CONFIG_DIR=str(config_dir), SAFEYOLO_LOGS_DIR=str(_smoke_logs_dir(config_dir)),
+               SAFEYOLO_DANGEROUSLY_ALLOW_ROOT="1")
     cli_path = cli["path"]
     listeners = []
     runtime = None

@@ -541,6 +541,7 @@ def test_guest_archive_without_host_package_cannot_reach_source_preparation(tmp_
 
 
 def test_retained_runner_uses_only_frozen_bytes_and_keeps_failed_execution(retained, tmp_path, monkeypatch):
+    monkeypatch.delenv("SAFEYOLO_DANGEROUSLY_ALLOW_ROOT", raising=False)
     selection_dir = tmp_path / "selection"
     result = selector.select(selection_dir, PLATFORM)
     retained["head"] = "f" * 40
@@ -552,12 +553,15 @@ def test_retained_runner_uses_only_frozen_bytes_and_keeps_failed_execution(retai
         assert args[args.index("--sha256") + 1] == result["host"]["archive"]["sha256"]
         assert "--lane" in args and args[args.index("--lane") + 1] == "systrap"
         assert kwargs["env"]["SAFEYOLO_BLACKBOX_FULL_SECTIONS"] == "1"
+        assert kwargs["env"]["SAFEYOLO_DANGEROUSLY_ALLOW_ROOT"] == "1"
+        assert "--dangerously-allow-root" not in args
         return subprocess.CompletedProcess(args, 19)
 
     monkeypatch.setattr(retained_inputs.subprocess, "run", execute)
     monkeypatch.setattr(retained_inputs, "controller_identity", lambda: {"controller_revision": "d" * 40, "controller_dirty": False})
     before = len(retained["calls"])
     assert retained_inputs.run(selection_dir / "selection.json", "systrap", tmp_path / "reports", [], True) == 19
+    assert "SAFEYOLO_DANGEROUSLY_ALLOW_ROOT" not in os.environ
     assert len(retained["calls"]) == before  # no moving name/API read during execution
     report = json.loads((tmp_path / "reports/retained-run.json").read_bytes())
     assert report["exit"] == 19 and report["finished_at"]
@@ -620,15 +624,17 @@ def test_archive_install_and_section_handoff_work_with_product_builders_unavaila
     scripts = controller / "tests/blackbox"
     scripts.mkdir(parents=True)
     (controller / "scripts").mkdir()
-    for name in ("run-installed-package.sh", "retained_inputs.py", "installed_host_smoke.py"):
+    for name in ("run-installed-package.sh", "retained_inputs.py", "installed_host_smoke.py", "execution_receipt.py", "selections.py"):
         shutil.copy2(ROOT / "tests/blackbox" / name, scripts / name)
     for name in ("native_package.sh", "select_blackbox_artifacts.py"):
         shutil.copy2(ROOT / "scripts" / name, controller / "scripts" / name)
     (controller / ".venv").symlink_to(sys.prefix, target_is_directory=True)
     handoff = scripts / "run-installed.sh"
-    handoff.write_text(f"#!{sys.executable}\n" + '''import json, pathlib, shutil, subprocess, sys
+    handoff.write_text(f"#!{sys.executable}\n" + '''import json, os, pathlib, shutil, subprocess, sys
 args = sys.argv[1:]
 assert args[0] == 'systrap' and '--prepared-config' in args and '--section' not in args
+assert os.environ['SAFEYOLO_DANGEROUSLY_ALLOW_ROOT'] == '1'
+assert '--dangerously-allow-root' not in args
 root = pathlib.Path(args[args.index('--prepared-config')+1])
 assert (root/'package-info').is_file() and (root/'share/guest-selection.json').is_file()
 assert shutil.which('runsc') == str(root/'libexec/runsc')

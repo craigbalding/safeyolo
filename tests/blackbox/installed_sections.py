@@ -47,7 +47,8 @@ def copy_prepared_nats(source: Path, root: Path) -> None:
 
 def prepare_native_instance(source: Path, root: Path, *, log=None) -> None:
     """Create fresh native state and reuse the prepared immutable inputs."""
-    subprocess.run([str(source / "bin/safeyolo"), "--dangerously-allow-root", "--instance-dir", str(root), "init"],
+    subprocess.run([str(source / "bin/safeyolo"), "--instance-dir", str(root), "init"],
+                   env=dict(os.environ, SAFEYOLO_DANGEROUSLY_ALLOW_ROOT="1"),
                    check=True, timeout=10, stdout=log, stderr=log)
     for name in ("bin", "assets", "lib", "libexec", "share", "host"):
         if not (source / name).exists():
@@ -114,6 +115,7 @@ def cleanup_instance(cli: Path, root: Path, *, owner: bool = False) -> list[str]
     """Stop only this section's agents/proxy and report surviving owned state."""
     env = os.environ.copy()
     env.update(SAFEYOLO_CONFIG_DIR=str(root), SAFEYOLO_LOGS_DIR=str(root / "logs"),
+               SAFEYOLO_DANGEROUSLY_ALLOW_ROOT="1",
                SAFEYOLO_COORD_DATA_DIR=str(root / "data/coord"),
                SAFEYOLO_SUBNET_BASE="76" if owner else "75")
     failures = []

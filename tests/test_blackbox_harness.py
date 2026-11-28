@@ -745,7 +745,7 @@ def test_prepared_inputs_reach_native_lifecycle_with_fresh_state(monkeypatch, na
             installed_sections.prepare_native_instance(source, root)
             monkeypatch.setenv("SAFEYOLO_CONFIG_DIR", str(root))
             monkeypatch.delenv("SAFEYOLO_NATIVE_CONFIG_PATH", raising=False)
-            assert json.loads(subprocess.check_output([str(root / "bin/safeyolo"), "--instance-dir", str(root), "status"]))["agents"] == []
+            assert json.loads(subprocess.check_output([str(root / "bin/safeyolo"), "--instance-dir", str(root), "--json", "status"]))["agents"] == []
             assert (root / "bin/safeyolo").resolve() == Path(binary).resolve()
             assert (root / "assets/input").stat().st_ino == (source / "assets/input").stat().st_ino
             if namespace_entry:
