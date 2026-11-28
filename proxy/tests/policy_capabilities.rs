@@ -336,9 +336,11 @@ fn compiled_definition_version_tracks_operation_source_and_schema_changes() {
         root.join("Cargo.lock"),
         root.join("build.rs"),
         root.join("../scripts/rust_build_identity.rs"),
+        root.join("../host-executor/Cargo.toml"),
     ];
     files(&root.join("src"), &mut paths);
     files(&root.join("vendor"), &mut paths);
+    files(&root.join("../host-executor/src"), &mut paths);
     paths.sort();
     let fingerprint = |change: bool| {
         let mut context = Context::new(&SHA256);
