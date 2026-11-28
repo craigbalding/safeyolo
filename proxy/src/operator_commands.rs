@@ -566,12 +566,13 @@ fn show_review_fact(label: &str, value: &Value) {
     if value.as_object().is_some_and(|fields| fields.is_empty()) {
         return;
     }
+    let display_label = safe(label);
     if value.is_object()
         || value
             .as_array()
             .is_some_and(|items| items.iter().any(|item| item.is_object() || item.is_array()))
     {
-        println!("{label}:");
+        println!("{display_label}:");
         show_evidence_fields(value, label.len() - label.trim_start().len() + 2);
         return;
     }
@@ -591,7 +592,7 @@ fn show_review_fact(label: &str, value: &Value) {
         Value::String(value) => value.clone(),
         _ => value.to_string(),
     };
-    println!("{label}: {}", safe(&rendered));
+    println!("{display_label}: {}", safe(&rendered));
 }
 
 fn review_time(value: &Value) -> String {
@@ -630,7 +631,7 @@ fn show_execution_authority(value: &Value) {
             .trim_end_matches(':');
         let label = format!("      {prefix}");
         if fact.as_array().is_some_and(|items| items.is_empty()) {
-            println!("{label}: none declared");
+            show_review_fact(&label, &json!("none declared"));
         } else {
             show_review_fact(&label, &fact);
         }

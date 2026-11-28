@@ -765,8 +765,15 @@ async fn host_scope_expansion_is_reviewed_inline_and_rejection_or_staleness_cann
                 Secret::new(STANDARD.encode(pkcs8.as_ref())),
             ))
             .unwrap();
-        let package: Package =
+        let mut package: Package =
             serde_json::from_str(include_str!("fixtures/host_execution/package.json")).unwrap();
+        package
+            .operations
+            .get_mut("restart")
+            .unwrap()
+            .execution
+            .executable
+            .push_str("\rUNTRUSTED PATH LABEL");
         let scope = json!({"implementation_sha256":package.operations["restart"].implementation_sha256(),
             "resources":["service:demo"],"arguments":{"wait":[5],"mode":["normal","quiet"]},
             "budgets":{"calls":2,"concurrent":1,"timeout_seconds":15,"output_bytes":512}});
@@ -824,6 +831,7 @@ async fn host_scope_expansion_is_reviewed_inline_and_rejection_or_staleness_cann
             assert!(rendered.contains("principal: uid:1000"));
             assert!(rendered.contains("Call limit: 2"));
             assert!(rendered.contains("credential custody:"));
+            assert!(rendered.contains("fixed-demo-restart?UNTRUSTED PATH LABEL"));
             assert!(!rendered.contains("/target/package/operations/"));
             assert!(!rendered.contains("BEGIN CERTIFICATE"));
             let mark = terminal.mark();
@@ -903,6 +911,7 @@ async fn host_scope_expansion_is_reviewed_inline_and_rejection_or_staleness_cann
             assert!(!rendered.contains("\"run_id\":"));
             assert!(rendered.contains("Saved policy matches running policy: true"));
             assert!(rendered.contains("(UTC)"));
+            assert!(rendered.contains("fixed-demo-restart?UNTRUSTED PATH LABEL"));
             assert!(rendered.contains("/host_bindings/owned/target/issuers/"));
             assert!(rendered.contains("/arguments/wait/1"));
             assert!(rendered.contains("Before: absent") && rendered.contains("After: 6"));
