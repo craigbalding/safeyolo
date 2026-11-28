@@ -158,8 +158,15 @@ through `POST /operator-actions` with parameters such as
 existing operator-action approval owner and binds the requesting guest's
 current run; no peer-support setup is needed for its own app. Agent responses
 contain the canonical request/result status. The URL and unlock code belong
-to the operator, who can open the publication through the supported command.
-Read the canonical result after a lost reply before submitting another request.
+to the operator. The operator reviews the request in `safeyolo watch` or with
+`safeyolo approvals show ID`, using the returned approval ID for `ID`.
+After approval, `approvals show ID` retrieves that publication's URL and unlock
+code without publishing again or extending its lifetime. From the guest,
+read `GET /operator-actions/ACTION_REQUEST_ID` using the returned action request
+ID. Check the execution result and current activation; an approved decision
+alone does not establish a running publication. The guest receives no unlock
+code or browser session material. After a lost reply, read this same canonical
+request before submitting another request.
 
 Host localhost can be carried over the operator's existing SSH forward as
 described above. Tailnet requires the selected host's actual Serve authority.
