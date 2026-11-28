@@ -175,6 +175,112 @@ async fn pinned_helper_captures_complete_streams_and_removes_runtime() {
 }
 
 #[tokio::test]
+async fn github_admission_requires_capture_but_manual_typed_jobs_do_not() {
+    use crate::policy::checks::{
+        Checks, Subject, Truth,
+        work::{Binding, Boundary},
+    };
+    let (root, mut spec, config) = fixture(
+        "printf '%s' '{\"finding\":{\"kind\":\"finding\",\"positive\":true}}'\nprintf '%s' '{\"completion\":{\"kind\":\"guest_call_completed\",\"reported_status\":0},\"error\":null}' > \"$2\"",
+    );
+    spec.retain_bytes = 4096;
+    let path = root.path().join("job.json");
+    fs::write(&path, serde_json::to_vec(&spec).unwrap()).unwrap();
+    let checks: Checks = serde_json::from_value(json!({"checks":{"author":{
+        "source_id":"adopted-author", "meaning":"Issue author matches the adopted identity",
+        "subject":"value", "result_type":"finding", "influences":["hard_exclusion"],
+        "implementation_version":"fixture", "configuration_version":"fixture", "max_age_seconds":60,
+        "invokers":["driver"], "inputs":{"repository":"craigbalding/safeyolo"},
+        "source":{"kind":"job", "spec":path, "effects":"passive", "limits":{
+            "timeout_ms":10000, "max_input_bytes":8192, "max_output_bytes":4096,
+            "max_concurrent":1, "max_pending":0, "max_cached":2}}}}, "check_rules":[]}))
+    .unwrap();
+    fs::write(
+        root.path().join("policy.toml"),
+        format!(
+            "{}\n[hosts.'*']\negress='deny'\n",
+            toml::to_string(&checks).unwrap()
+        ),
+    )
+    .unwrap();
+    fs::write(
+        &config,
+        "admin_port=0\nlisteners=[]\nflow_store_enabled=false\n",
+    )
+    .unwrap();
+    for name in ["data", "services", "builtin-services"] {
+        fs::create_dir(root.path().join(name)).unwrap();
+    }
+    fs::write(
+        root.path().join("data/instance_id"),
+        "sy-dddddddddddddddddddddddddddddddd",
+    )
+    .unwrap();
+    let proxy = crate::Proxy::start(crate::native_config::read(&config).unwrap())
+        .await
+        .unwrap();
+    let runtime = proxy.runtime.read().unwrap().clone();
+    let checks = runtime.policy.as_ref().unwrap().named_checks();
+    let subject = Subject::Value {
+        value: "1584".into(),
+    };
+    let manual = checks
+        .invoke_named(
+            "author",
+            "driver",
+            subject.clone(),
+            &runtime,
+            &proxy.runtime,
+        )
+        .await
+        .unwrap();
+    assert!(manual.unavailable.is_none(), "{manual:?}");
+    assert_eq!(
+        serde_json::to_value(&manual.result.as_ref().unwrap().finding).unwrap(),
+        json!({"kind":"finding","positive":true})
+    );
+    let admitted = checks
+        .invoke_automatic(
+            "author",
+            subject.clone(),
+            &runtime,
+            &proxy.runtime,
+            Boundary::AdmitIssue,
+            None,
+        )
+        .await
+        .unwrap();
+    proxy.shutdown().await;
+    let execution = admitted.execution.as_ref().unwrap();
+    assert_eq!(execution["outcome"], json!({"kind":"exit","code":0}));
+    assert_eq!(execution["service_evidence"], json!([]));
+    assert!(execution.get("checked_input").is_none());
+    assert_ne!(
+        execution["run_id"],
+        manual.execution.as_ref().unwrap()["run_id"]
+    );
+    assert_eq!(
+        admitted.unavailable.as_deref(),
+        Some("GitHub snapshot capture unavailable")
+    );
+    assert!(admitted.result.is_none());
+    let binding: Binding = serde_json::from_value(json!({"name":"author", "room":"fixture",
+        "factory":"fixture", "boundary":"admit_issue", "job":"author", "input":"github_issue",
+        "repository":"craigbalding/safeyolo", "on_failure":"hold",
+        "require":{"op":"finding","check":"author"}}))
+    .unwrap();
+    assert_ne!(
+        checks.work_truth(
+            &binding,
+            &subject,
+            admitted,
+            now().unwrap().try_into().unwrap()
+        ),
+        Truth::True
+    );
+}
+
+#[tokio::test]
 async fn operator_selected_artifact_links_still_verify_the_copied_bytes() {
     let (root, spec, config) = fixture(
         "printf '%s' '{\"completion\":{\"kind\":\"guest_call_completed\",\"reported_status\":0},\"error\":null}' > \"$2\"",
@@ -528,11 +634,157 @@ async fn cancellation_stops_a_blocked_helper_and_preserves_no_runtime() {
     assert_eq!(fs::read_dir(root.path().join("data")).unwrap().count(), 0);
 }
 
+async fn wait_for_unreaped_exit(helper: &Helper) {
+    let pid = helper.child.id().unwrap() as libc::pid_t;
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    loop {
+        let mut info = std::mem::MaybeUninit::<libc::siginfo_t>::zeroed();
+        assert_eq!(
+            unsafe {
+                libc::waitid(
+                    libc::P_PID,
+                    pid as libc::id_t,
+                    info.as_mut_ptr(),
+                    libc::WEXITED | libc::WNOWAIT | libc::WNOHANG,
+                )
+            },
+            0
+        );
+        if unsafe { info.assume_init().si_pid() } == pid {
+            return;
+        }
+        assert!(std::time::Instant::now() < deadline);
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+}
+
+#[tokio::test]
+async fn stop_reaps_a_helper_that_exited_before_group_signalling() {
+    let (root, _, _) = fixture("exit 7");
+    let child = command(&root.path().join("helper-source")).spawn().unwrap();
+    let mut helper = Helper {
+        group: child.id(),
+        child,
+    };
+    wait_for_unreaped_exit(&helper).await;
+    // Darwin's group kill returns EPERM here. Linux normally returns success.
+    assert_eq!(
+        stop(&mut helper).await.unwrap(),
+        HelperProcessStatus::Exit { code: 7 }
+    );
+    assert!(helper.group.is_none());
+    assert!(helper.child.id().is_none());
+}
+
+#[tokio::test]
+async fn exited_helper_recovery_does_not_accept_a_live_helper() {
+    let mut child = command(Path::new("/bin/sleep"));
+    child.arg("999");
+    let child = child.spawn().unwrap();
+    let mut helper = Helper {
+        group: child.id(),
+        child,
+    };
+    let error = reap_after_denied_group_kill(&mut helper)
+        .await
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("did not exit within 5 seconds"), "{error}");
+    assert!(helper.child.try_wait().unwrap().is_none());
+    assert!(helper.group.is_some());
+    assert_eq!(
+        stop(&mut helper).await.unwrap(),
+        HelperProcessStatus::Signal {
+            number: libc::SIGKILL
+        }
+    );
+}
+
+#[tokio::test]
+async fn denied_group_kill_waits_for_delayed_helper_exit() {
+    // EOF stands in for closing the host-call bridge. The child remains live
+    // during cleanup, then exits; an immediate try_wait cannot prove this.
+    let (root, _, _) = fixture("/bin/cat >/dev/null\nexit 7");
+    let mut child = command(&root.path().join("helper-source"))
+        .stdin(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let input = child.stdin.take().unwrap();
+    let mut helper = Helper {
+        group: child.id(),
+        child,
+    };
+    assert!(helper.child.try_wait().unwrap().is_none());
+    let close_bridge = async {
+        // Poll cleanup while EOF is still withheld, then allow the child to
+        // exit. This schedule does not depend on a wall-clock delay.
+        tokio::task::yield_now().await;
+        drop(input);
+    };
+    let (status, ()) = tokio::join!(reap_after_denied_group_kill(&mut helper), close_bridge);
+    assert_eq!(status.unwrap(), HelperProcessStatus::Exit { code: 7 });
+    assert!(helper.group.is_none());
+    assert!(helper.child.id().is_none());
+    assert_reaped(root.path());
+}
+
+#[tokio::test]
+async fn stop_kills_descendants_before_reaping_an_exited_leader() {
+    for dropping in [false, true] {
+        let (root, _, _) = fixture("/bin/sleep 999 &\nexit 0");
+        let mut child = command(&root.path().join("helper-source")).spawn().unwrap();
+        let stdout = child.stdout.take().unwrap();
+        let mut helper = Helper {
+            group: child.id(),
+            child,
+        };
+        wait_for_unreaped_exit(&helper).await;
+        if dropping {
+            drop(helper);
+        } else {
+            assert_eq!(
+                stop(&mut helper).await.unwrap(),
+                HelperProcessStatus::Exit { code: 0 }
+            );
+        }
+        // The descendant inherited stdout. EOF proves it cannot keep running with
+        // that descriptor after the leader has already exited.
+        let output = tokio::time::timeout(Duration::from_secs(5), collect(stdout, 16))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(output.bytes, 0);
+    }
+}
+
+#[tokio::test]
+async fn exited_helper_recovery_never_signals_a_remaining_group() {
+    let (root, _, _) = fixture("exit 0");
+    let child = command(&root.path().join("helper-source")).spawn().unwrap();
+    let mut helper = Helper {
+        group: child.id(),
+        child,
+    };
+    helper.child.wait().await.unwrap();
+    let mut foreign = command(Path::new("/bin/sleep"));
+    let mut foreign = foreign.arg("999").spawn().unwrap();
+    helper.group = foreign.id();
+    let error = reap_after_denied_group_kill(&mut helper)
+        .await
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("still exists"), "{error}");
+    assert!(helper.group.is_none());
+    drop(helper);
+    assert!(foreign.try_wait().unwrap().is_none());
+    foreign.kill().await.unwrap();
+}
+
 #[test]
 fn unsupported_authority_is_refused_and_relative_artifacts_follow_adopted_spec() {
     let (root, mut spec, _) = fixture("exit 0");
     spec.network = true;
-    assert!(spec.validate().unwrap_err().to_string().contains("network"));
+    spec.validate().unwrap();
     spec.network = false;
     spec.privilege = Privilege::GuestRoot;
     assert!(

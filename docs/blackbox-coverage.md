@@ -639,7 +639,7 @@ Metadata lives in [`controls.toml`](../tests/blackbox/controls.toml). The [assur
 
 **Current existence:** resolved witnesses listed below; no current run inferred.
 
-- [tests/blackbox/host/job_network.py::main](../tests/blackbox/host/job_network.py#L420) — Installed driver; actual backend and identities recorded in its own report. Evidence: Real installed process/guest where the driver boots one; owned endpoints; no assertion that manual execution recurs.
+- [tests/blackbox/host/job_network.py::main](../tests/blackbox/host/job_network.py#L449) — Installed driver; actual backend and identities recorded in its own report. Evidence: Real installed process/guest where the driver boots one; owned endpoints; no assertion that manual execution recurs.
   Selection: default `systrap` section `job-network`; [systrap](../.github/workflows/blackbox.yml) (scheduled/manual; default `systrap` sections); [retained](../.github/workflows/installed-arm64.yml) (conditional CI; default `systrap` sections); default `kvm` section `job-network`; default `vz` section `job-network`.
 
 ### BB-18 — Local peer support
@@ -885,7 +885,7 @@ Metadata lives in [`controls.toml`](../tests/blackbox/controls.toml). The [assur
   Exact identities: [source inventory](#witness-proxy-tests-native-coord-federation-reliability-rs).
 - [proxy/tests/native_coord/federation/support.rs](../proxy/tests/native_coord/federation/support.rs#L197) — Native Coord/NATS; host process; cfg and ignore annotations retain venue limits. Evidence: Real instances/NATS with controlled run-lifetime fixtures; not a real guest effect by itself.
   Exact identities: [source inventory](#witness-proxy-tests-native-coord-federation-support-rs).
-- [proxy/tests/native_coord/federation/support_audit.rs](../proxy/tests/native_coord/federation/support_audit.rs#L43) — Native Coord/NATS; host process; cfg and ignore annotations retain venue limits. Evidence: Real instances/NATS with controlled run-lifetime fixtures; not a real guest effect by itself.
+- [proxy/tests/native_coord/federation/support_audit.rs](../proxy/tests/native_coord/federation/support_audit.rs#L42) — Native Coord/NATS; host process; cfg and ignore annotations retain venue limits. Evidence: Real instances/NATS with controlled run-lifetime fixtures; not a real guest effect by itself.
   Exact identities: [source inventory](#witness-proxy-tests-native-coord-federation-support-audit-rs).
 - [proxy/tests/native_coord/federation/support_authority.rs](../proxy/tests/native_coord/federation/support_authority.rs#L202) — Native Coord/NATS; host process; cfg and ignore annotations retain venue limits. Evidence: Real instances/NATS with controlled run-lifetime fixtures; not a real guest effect by itself.
   Exact identities: [source inventory](#witness-proxy-tests-native-coord-federation-support-authority-rs).
@@ -967,7 +967,7 @@ Metadata lives in [`controls.toml`](../tests/blackbox/controls.toml). The [assur
 
 **Audit coverage:** Accepted #1543/#1544/#1546 fixtures; maintained named-checks and policy-recipe phases.
 
-**Conformance / action:** Maintained native named-checks and pytest policy-recipe phases cover composition, binding, freshness, unknown/error, redirect and pending revocation. Preview observes zero assessed-target/dependency contact. The prepared real-job case remains required and incomplete without its selected host.
+**Conformance / action:** Maintained native named-checks and pytest policy-recipe phases cover composition, binding, freshness, unknown/error, redirect and pending revocation. Preview observes zero assessed-target/dependency contact. The shared hyperlight_network.py host witness uses the same adopted job for direct and named calls across platform and Hyperlight engines. Its caller, scope and lifetime modes cover gate authority, dependency cycles, contact-free preview and bound cached evidence on the selected real host. The separate prepared native real-job case remains required and incomplete without its selected host.
 
 **Effort:** L. **Comments:** Retain accepted [typed/composition proof](https://github.com/craigbalding/safeyolo/issues/1543#issuecomment-6854609584), [job/service proof](https://github.com/craigbalding/safeyolo/issues/1544#issuecomment-6858612088), #1546 and [maintained BB-29 acceptance](https://github.com/craigbalding/safeyolo/issues/1563#issuecomment-6901839101). The 30 nonignored native cases have [partial scheduled process evidence](https://github.com/craigbalding/safeyolo/actions/runs/43707854900/job/132807509327) at `d43ba93d`, before a later transport-test failure. The prepared real-job case was ignored. The focused receipt remains manual and incomplete without that case. These process/installed-layout selections boot no guest; no new installed-platform or live-provider pass is inferred.
 
@@ -991,6 +991,12 @@ Metadata lives in [`controls.toml`](../tests/blackbox/controls.toml). The [assur
   Exact identities: [source inventory](#witness-tests-proxy-contracts-test-service-effect-assessment-py).
 - [tests/proxy_contracts/test_control_updates.py](../tests/proxy_contracts/test_control_updates.py#L111) — Native signals process; optional prepared Linux sandbox jobs. Evidence: Signed native candidates, owned NATS and controlled route requests; real isolated checks require the selected installed host.
   Exact identities: [source inventory](#witness-tests-proxy-contracts-test-control-updates-py).
+- [proxy/src/jobs/proxy_stream.rs](../proxy/src/jobs/proxy_stream.rs#L147) — Native delegated proxy byte transport; host process. Evidence: Real proxy and owned origin; no guest client or VM execution.
+  Exact identities: [source inventory](#witness-proxy-src-jobs-proxy-stream-rs-jobs-proxy-stream-tests).
+- [tests/test_hyperlight_network_witness.py](../tests/test_hyperlight_network_witness.py#L48) — HTTP/HTTPS, shared engine scopes and authority/lifetime witness controls. Evidence: Retained Core observations, actual platform curl client over owned proxy sockets, and controlled job adapters with loopback HTTP/TLS, EOF, process-birth/backend teardown, endpoint, contact and cache assertions; no VM or installed authority claim.
+  Exact identities: [source inventory](#witness-tests-test-hyperlight-network-witness-py).
+- [tests/blackbox/host/hyperlight_network.py::main](../tests/blackbox/host/hyperlight_network.py#L972) — Manual installed public-network direct/named witness for the selected job engine. Evidence: Shared public HTTP/HTTPS cases select Hyperlight bundles or installed gVisor/VZ inputs. Separate scope/caller modes cover method/path/destination refusal, adopted gates, expiry, cycle and offline effects. The scope HTTP 302 case proves only a negative finding without following. The separate redirect mode follows one hop in each guest engine; Core selects the diagnostic NetworkRedirectCheck. It pairs allowed targets with scope removal and requires exact-run proxy denial plus no target contact. Lifetime mode retains Hyperlight direct/named cases and selects only platform named deadline/revocation cases, with held EOF, backend teardown, same-subject late-result discard, policy invalidation, expiry and subject/gate cache separation. Unrun modes/platforms remain unqualified, with no recurring maintained-run claim.
+  Selection: manual; no recurring selector resolved.
 - [proxy/src/http/policy_checks/execution_tests.rs](../proxy/src/http/policy_checks/execution_tests.rs#L127) — Native Rust; host OS/cfg and ignore attributes are retained per source. Evidence: Real native request/gateway; owned assessment service and origin.
   Exact identities: [source inventory](#witness-proxy-src-http-policy-checks-execution-tests-rs).
 - [proxy/src/policy/checks.rs](../proxy/src/policy/checks.rs#L1551) — Native evaluator; process fixtures. Evidence: Composition, three-valued results, type/subject/version/freshness binding and offline preview; actual HTTP enforcement is separate.
@@ -1041,7 +1047,7 @@ Metadata lives in [`controls.toml`](../tests/blackbox/controls.toml). The [assur
 
 **Audit coverage:** Accepted #1549/#1550/#1552 engine fixtures; manual two-engine driver and native mediated-services phase.
 
-**Conformance / action:** The shared real-engine driver covers permitted GitHub reads, destination/method/path/repository and socket/DNS/direct-IP/ABI refusal, finite limits, cancellation/revocation/shutdown and late completion. Per-engine checkpoints and owned cleanup are required. Native mediated-services tests alone establish no VM boundary.
+**Conformance / action:** The shared real-engine driver covers permitted GitHub reads, destination/method/path/repository and socket/DNS/direct-IP/ABI refusal, finite limits, cancellation/revocation/shutdown and late completion. The hyperlight_network.py host witness adds public HTTP/TLS access without a Gateway grant, independent gate authority, scope and lifetime modes, and an explicit one-hop redirect mode for clients that follow redirects. It accepts the installed bundle or prepared platform runtime; job_network.py retains platform Gateway and direct lifecycle coverage. Per-engine checkpoints and owned cleanup are required. Native mediated-services tests alone establish no VM boundary.
 
 **Effort:** L. **Comments:** Retain [maintained two-engine acceptance](https://github.com/craigbalding/safeyolo/issues/1563#issuecomment-6902006974), [engine evidence](https://github.com/craigbalding/safeyolo/issues/1552#issuecomment-6877115753) and [installed adoption proof](https://github.com/craigbalding/safeyolo/issues/1552#issuecomment-6877595456) at their recorded sources, profiles and Linux/Mac limits. The maintained execution used pinned accepted debug artifacts; it is not current-production qualification. Six native bridge cases have [partial scheduled process evidence](https://github.com/craigbalding/safeyolo/actions/runs/43707854900/job/132807509327) at `d43ba93d`, before a later transport-test failure; these cases prove no VM boundary. KVM/HVF, compatible artifacts and scoped GitHub credentials are explicit prerequisites for the manual two-engine driver. A missing engine or lifetimes-only run cannot complete its receipt. The selected AMD64 engine dispatch is deployed through the daily devstack rundeck caller. Its natural 19 November 2026 run 7fd9c86285a64d76af2ec5daaebad022 passed the engine phase; the five-dispatch adapter and cleanup returned zero. The independently reviewed recurrence receipt retains source, run and phase operands; no separate ARM64 recurrence is inferred. See the [independent AMD64 cadence disposition](https://github.com/craigbalding/safeyolo/issues/1563#issuecomment-6967616840).
 
@@ -1057,11 +1063,21 @@ Metadata lives in [`controls.toml`](../tests/blackbox/controls.toml). The [assur
   Exact identities: [source inventory](#witness-tests-test-hyperlight-service-checker-py).
 - [tests/test_job_authoring.py](../tests/test_job_authoring.py#L61) — Host job authoring and adoption; controlled adapters. Evidence: Controlled build/runner adapters; not a live Hyperlight boundary pass.
   Exact identities: [source inventory](#witness-tests-test-job-authoring-py).
-- [tests/blackbox/host/hyperlight_adoption.py::main](../tests/blackbox/host/hyperlight_adoption.py#L165) — Installed driver; actual backend and identities recorded in its own report. Evidence: Real installed process/guest where the driver boots one; owned endpoints; no assertion that manual execution recurs.
+- [tests/test_hyperlight_proxy_client.py](../tests/test_hyperlight_proxy_client.py#L205) — HTTP/TLS client libraries and guest SSL packaging on the host CPU. Evidence: Real HTTP/OpenSSL/Rustls over fragmented fixture proxy bytes; optional assembled-image Python adapter; pinned-package and CPIO controls. No VM, native delegation, gate policy or isolation claim.
+  Exact identities: [source inventory](#witness-tests-test-hyperlight-proxy-client-py).
+- [tests/test_hyperlight_rootfs.py](../tests/test_hyperlight_rootfs.py#L49) — HTTP/TLS client libraries and guest SSL packaging on the host CPU. Evidence: Real HTTP/OpenSSL/Rustls over fragmented fixture proxy bytes; optional assembled-image Python adapter; pinned-package and CPIO controls. No VM, native delegation, gate policy or isolation claim.
+  Exact identities: [source inventory](#witness-tests-test-hyperlight-rootfs-py).
+- [proxy/src/jobs/proxy_stream.rs](../proxy/src/jobs/proxy_stream.rs#L147) — Native delegated proxy byte transport; host process. Evidence: Real proxy and owned origin; no guest client or VM execution.
+  Exact identities: [source inventory](#witness-proxy-src-jobs-proxy-stream-rs-jobs-proxy-stream-tests).
+- [tests/test_hyperlight_network_witness.py](../tests/test_hyperlight_network_witness.py#L48) — HTTP/HTTPS, shared engine scopes and authority/lifetime witness controls. Evidence: Retained Core observations, actual platform curl client over owned proxy sockets, and controlled job adapters with loopback HTTP/TLS, EOF, process-birth/backend teardown, endpoint, contact and cache assertions; no VM or installed authority claim.
+  Exact identities: [source inventory](#witness-tests-test-hyperlight-network-witness-py).
+- [tests/blackbox/host/hyperlight_network.py::main](../tests/blackbox/host/hyperlight_network.py#L972) — Manual installed public-network direct/named witness for the selected job engine. Evidence: Shared public HTTP/HTTPS cases select Hyperlight bundles or installed gVisor/VZ inputs. Separate scope/caller modes cover method/path/destination refusal, adopted gates, expiry, cycle and offline effects. The scope HTTP 302 case proves only a negative finding without following. The separate redirect mode follows one hop in each guest engine; Core selects the diagnostic NetworkRedirectCheck. It pairs allowed targets with scope removal and requires exact-run proxy denial plus no target contact. Lifetime mode retains Hyperlight direct/named cases and selects only platform named deadline/revocation cases, with held EOF, backend teardown, same-subject late-result discard, policy invalidation, expiry and subject/gate cache separation. Unrun modes/platforms remain unqualified, with no recurring maintained-run claim.
   Selection: manual; no recurring selector resolved.
-- [tests/blackbox/host/hyperlight_services.py::main](../tests/blackbox/host/hyperlight_services.py#L988) — Installed driver; actual backend and identities recorded in its own report. Evidence: Real installed process/guest where the driver boots one; owned endpoints; no assertion that manual execution recurs.
+- [tests/blackbox/host/hyperlight_adoption.py::main](../tests/blackbox/host/hyperlight_adoption.py#L170) — Installed driver; actual backend and identities recorded in its own report. Evidence: Real installed process/guest where the driver boots one; owned endpoints; no assertion that manual execution recurs.
   Selection: manual; no recurring selector resolved.
-- [proxy/src/jobs/hyperlight/tests.rs](../proxy/src/jobs/hyperlight/tests.rs#L71) — Native Rust; host OS/cfg and ignore attributes are retained per source. Evidence: Controlled executable-helper supervisor; no VM or Python checker execution.
+- [tests/blackbox/host/hyperlight_services.py::main](../tests/blackbox/host/hyperlight_services.py#L991) — Installed driver; actual backend and identities recorded in its own report. Evidence: Real installed process/guest where the driver boots one; owned endpoints; no assertion that manual execution recurs.
+  Selection: manual; no recurring selector resolved.
+- [proxy/src/jobs/hyperlight/tests.rs](../proxy/src/jobs/hyperlight/tests.rs#L71) — Native Rust; host OS/cfg and ignore attributes are retained per source. Evidence: Controlled executable-helper supervisor and real job/check/admission pipeline; no VM or Python checker execution.
   Exact identities: [source inventory](#witness-proxy-src-jobs-hyperlight-tests-rs).
 - [proxy/src/jobs/mediated/tests.rs](../proxy/src/jobs/mediated/tests.rs#L31) — Native mediated job capabilities; host process. Evidence: Controlled runtime, artifact and credential fixtures; real native capability enforcement.
   Exact identities: [source inventory](#witness-proxy-src-jobs-mediated-tests-rs).
@@ -1074,7 +1090,7 @@ Metadata lives in [`controls.toml`](../tests/blackbox/controls.toml). The [assur
 
 **Audit coverage:** Accepted #1551 native transition fixtures; maintained before-after phase.
 
-**Conformance / action:** Real native Work/service boundaries cover omitted selectors, stale/substituted evidence, exact output replacement, pending revocation, committed-obligation recovery, crash after dispatch and explicit uncertainty without automatic replay. Follow-up failure cannot undo the committed transition.
+**Conformance / action:** Real native Work/service boundaries cover omitted selectors, stale/substituted evidence, exact output replacement, pending revocation, committed-obligation recovery, crash after dispatch and explicit uncertainty without automatic replay. The hyperlight_adoption.py installed witness consumes the independently captured GitHub snapshot, derives and retains an output artifact, and exercises automatic output checks alongside required independent review. Generic job findings do not replace required source capture. Follow-up failure cannot undo the committed transition.
 
 **Effort:** L. **Comments:** Retain [maintained BB-32 acceptance](https://github.com/craigbalding/safeyolo/issues/1563#issuecomment-6901839101). All eleven native transition cases have [partial scheduled process evidence](https://github.com/craigbalding/safeyolo/actions/runs/43707854900/job/132807509327) at `d43ba93d`, before a later transport-test failure. The focused receipt remains manual. Owned effect counters and controlled providers observe enforcement. These process results do not establish an external GitHub merge/release boundary or repeat #1552 installed factory proof.
 
@@ -2728,7 +2744,7 @@ Selection: phase `sudo-disclosure` (host); [test-addons](../.github/workflows/ci
 Selection: [test-addons](../.github/workflows/ci.yml) (conditional CI; condition `${{ !cancelled() && (needs.guest-inputs.result == 'success' || needs.guest-inputs.result == 'skipped') }}; step github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'`).
 
 - [`tests/test_hyperlight_adoption.py::test_checked_snapshot_is_consumed_only_for_its_exact_subject`](../tests/test_hyperlight_adoption.py#L21)
-- [`tests/test_hyperlight_adoption.py::test_uncertain_unix_request_retains_original_operation_without_retry`](../tests/test_hyperlight_adoption.py#L45)
+- [`tests/test_hyperlight_adoption.py::test_uncertain_unix_request_retains_original_operation_without_retry`](../tests/test_hyperlight_adoption.py#L56)
 
 <a id="witness-tests-test-hyperlight-service-checker-py"></a>
 ### [`tests/test_hyperlight_service_checker.py`](../tests/test_hyperlight_service_checker.py)
@@ -2760,18 +2776,19 @@ Selection: [test-addons](../.github/workflows/ci.yml) (conditional CI; condition
 - [`tests/test_hyperlight_service_checker.py::test_warm_probe_rejects_replayed_runtime_randomness_and_preserves_samples`](../tests/test_hyperlight_service_checker.py#L425)
 - [`tests/test_hyperlight_service_checker.py::test_driver_preserves_job33_failure_before_decoding_stdout`](../tests/test_hyperlight_service_checker.py#L477)
 - [`tests/test_hyperlight_service_checker.py::test_driver_cannot_accept_json_from_a_failed_command`](../tests/test_hyperlight_service_checker.py#L511)
-- [`tests/test_hyperlight_service_checker.py::test_driver_accepts_only_the_explicit_retained_grant_denial`](../tests/test_hyperlight_service_checker.py#L546)
-- [`tests/test_hyperlight_service_checker.py::test_driver_matches_sibling_job_outcomes_and_cli_status`](../tests/test_hyperlight_service_checker.py#L566)
-- [`tests/test_hyperlight_service_checker.py::test_expected_negative_still_rejects_command_and_observation_failures`](../tests/test_hyperlight_service_checker.py#L585)
-- [`tests/test_hyperlight_service_checker.py::test_expected_negative_requires_a_retained_json_file`](../tests/test_hyperlight_service_checker.py#L593)
-- [`tests/test_hyperlight_service_checker.py::test_host_capture_retains_the_current_policy_and_configuration_identities`](../tests/test_hyperlight_service_checker.py#L618)
-- [`tests/test_hyperlight_service_checker.py::test_capture_observer_requires_the_selected_current_principal`](../tests/test_hyperlight_service_checker.py#L627)
-- [`tests/test_hyperlight_service_checker.py::test_engine_observer_matches_selected_engine_and_artifact_pins`](../tests/test_hyperlight_service_checker.py#L640)
-- [`tests/test_hyperlight_service_checker.py::test_host_capture_rejects_invalid_identity_or_time_binding`](../tests/test_hyperlight_service_checker.py#L661)
-- [`tests/test_hyperlight_service_checker.py::test_named_evidence_binds_the_raw_adopted_definition_digest`](../tests/test_hyperlight_service_checker.py#L667)
-- [`tests/test_hyperlight_service_checker.py::test_held_controls_keep_entry_triggers_late_release_and_fresh_runs`](../tests/test_hyperlight_service_checker.py#L688)
-- [`tests/test_hyperlight_service_checker.py::test_held_controls_reject_an_unreached_or_finished_call`](../tests/test_hyperlight_service_checker.py#L752)
-- [`tests/test_hyperlight_service_checker.py::test_remaining_window_skips_completed_phases_and_reports_its_actual_scope`](../tests/test_hyperlight_service_checker.py#L768)
+- [`tests/test_hyperlight_service_checker.py::test_driver_policy_preview_selects_machine_output`](../tests/test_hyperlight_service_checker.py#L551)
+- [`tests/test_hyperlight_service_checker.py::test_driver_accepts_only_the_explicit_retained_grant_denial`](../tests/test_hyperlight_service_checker.py#L565)
+- [`tests/test_hyperlight_service_checker.py::test_driver_matches_sibling_job_outcomes_and_cli_status`](../tests/test_hyperlight_service_checker.py#L585)
+- [`tests/test_hyperlight_service_checker.py::test_expected_negative_still_rejects_command_and_observation_failures`](../tests/test_hyperlight_service_checker.py#L604)
+- [`tests/test_hyperlight_service_checker.py::test_expected_negative_requires_a_retained_json_file`](../tests/test_hyperlight_service_checker.py#L612)
+- [`tests/test_hyperlight_service_checker.py::test_host_capture_retains_the_current_policy_and_configuration_identities`](../tests/test_hyperlight_service_checker.py#L637)
+- [`tests/test_hyperlight_service_checker.py::test_capture_observer_requires_the_selected_current_principal`](../tests/test_hyperlight_service_checker.py#L646)
+- [`tests/test_hyperlight_service_checker.py::test_engine_observer_matches_selected_engine_and_artifact_pins`](../tests/test_hyperlight_service_checker.py#L659)
+- [`tests/test_hyperlight_service_checker.py::test_host_capture_rejects_invalid_identity_or_time_binding`](../tests/test_hyperlight_service_checker.py#L680)
+- [`tests/test_hyperlight_service_checker.py::test_named_evidence_binds_the_raw_adopted_definition_digest`](../tests/test_hyperlight_service_checker.py#L686)
+- [`tests/test_hyperlight_service_checker.py::test_held_controls_keep_entry_triggers_late_release_and_fresh_runs`](../tests/test_hyperlight_service_checker.py#L718)
+- [`tests/test_hyperlight_service_checker.py::test_held_controls_reject_an_unreached_or_finished_call`](../tests/test_hyperlight_service_checker.py#L782)
+- [`tests/test_hyperlight_service_checker.py::test_remaining_window_skips_completed_phases_and_reports_its_actual_scope`](../tests/test_hyperlight_service_checker.py#L798)
 
 <a id="witness-tests-test-job-authoring-py"></a>
 ### [`tests/test_job_authoring.py`](../tests/test_job_authoring.py)
@@ -2784,6 +2801,69 @@ Selection: [test-addons](../.github/workflows/ci.yml) (conditional CI; condition
 - [`tests/test_job_authoring.py::test_preparation_selects_developed_bundle_without_replacing_installed_bytes`](../tests/test_job_authoring.py#L162)
 - [`tests/test_job_authoring.py::test_preparation_refuses_conflicts_instead_of_replacing_adopted_authority`](../tests/test_job_authoring.py#L199)
 - [`tests/test_job_authoring.py::test_publication_fields_bind_the_actual_bytes`](../tests/test_job_authoring.py#L217)
+
+<a id="witness-tests-test-hyperlight-proxy-client-py"></a>
+### [`tests/test_hyperlight_proxy_client.py`](../tests/test_hyperlight_proxy_client.py)
+
+Selection: [test-addons](../.github/workflows/ci.yml) (conditional CI; condition `${{ !cancelled() && (needs.guest-inputs.result == 'success' || needs.guest-inputs.result == 'skipped') }}; step github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'`).
+
+- [`tests/test_hyperlight_proxy_client.py::test_maintained_clients_use_fragmented_proxy_streams`](../tests/test_hyperlight_proxy_client.py#L205)
+- [`tests/test_hyperlight_proxy_client.py::test_guest_client_preserves_the_services_selected_authentication`](../tests/test_hyperlight_proxy_client.py#L223)
+- [`tests/test_hyperlight_proxy_client.py::test_tls_refusal_precedes_application_request`](../tests/test_hyperlight_proxy_client.py#L239)
+- [`tests/test_hyperlight_proxy_client.py::test_http_proxy_denial_is_a_completed_negative_finding`](../tests/test_hyperlight_proxy_client.py#L265)
+- [`tests/test_hyperlight_proxy_client.py::test_adopted_status_input_controls_finding_and_invalid_input_never_contacts_origin`](../tests/test_hyperlight_proxy_client.py#L279)
+
+<a id="witness-tests-test-hyperlight-rootfs-py"></a>
+### [`tests/test_hyperlight_rootfs.py`](../tests/test_hyperlight_rootfs.py)
+
+Selection: [test-addons](../.github/workflows/ci.yml) (conditional CI; condition `${{ !cancelled() && (needs.guest-inputs.result == 'success' || needs.guest-inputs.result == 'skipped') }}; step github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'`).
+
+- [`tests/test_hyperlight_rootfs.py::test_rootfs_addition_preserves_existing_files_and_creates_library_parents`](../tests/test_hyperlight_rootfs.py#L49)
+- [`tests/test_hyperlight_rootfs.py::test_incomplete_guest_image_fails_before_adding_ssl`](../tests/test_hyperlight_rootfs.py#L70)
+- [`tests/test_hyperlight_rootfs.py::test_pinned_package_is_verified_before_only_required_regular_members_are_added`](../tests/test_hyperlight_rootfs.py#L84)
+
+<a id="witness-proxy-src-jobs-proxy-stream-rs-jobs-proxy-stream-tests"></a>
+### [`proxy/src/jobs/proxy_stream.rs`](../proxy/src/jobs/proxy_stream.rs)
+
+Selection: [contracts](../.github/workflows/proxy-rust.yml) (scheduled/manual; condition `github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && !inputs.packages_only)`).
+
+- [`cargo test --manifest-path proxy/Cargo.toml --lib jobs::proxy_stream::tests::guest_cannot_select_host_transport_or_forge_authority -- --exact`](../proxy/src/jobs/proxy_stream.rs#L147)
+- [`cargo test --manifest-path proxy/Cargo.toml --lib jobs::proxy_stream::tests::gateway_header_preserves_the_services_selected_authentication -- --exact`](../proxy/src/jobs/proxy_stream.rs#L168)
+- [`cargo test --manifest-path proxy/Cargo.toml --lib jobs::proxy_stream::tests::public_egress_needs_only_gate_policy_and_revocation_closes_streams -- --exact`](../proxy/src/jobs/proxy_stream.rs#L206)
+
+<a id="witness-tests-test-hyperlight-network-witness-py"></a>
+### [`tests/test_hyperlight_network_witness.py`](../tests/test_hyperlight_network_witness.py)
+
+Selection: [test-addons](../.github/workflows/ci.yml) (conditional CI; condition `${{ !cancelled() && (needs.guest-inputs.result == 'success' || needs.guest-inputs.result == 'skipped') }}; step github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'`).
+
+- [`tests/test_hyperlight_network_witness.py::test_witness_accepts_the_reached_core_findings`](../tests/test_hyperlight_network_witness.py#L48)
+- [`tests/test_hyperlight_network_witness.py::test_platform_client_uses_only_selected_proxy_and_strict_guest_tls`](../tests/test_hyperlight_network_witness.py#L58)
+- [`tests/test_hyperlight_network_witness.py::test_redirect_clients_actually_follow_one_location`](../tests/test_hyperlight_network_witness.py#L110)
+- [`tests/test_hyperlight_network_witness.py::test_core_redirect_diagnostic_preserves_default_and_stops_after_one_hop`](../tests/test_hyperlight_network_witness.py#L180)
+- [`tests/test_hyperlight_network_witness.py::test_redirect_origin_serves_the_target_without_another_redirect`](../tests/test_hyperlight_network_witness.py#L207)
+- [`tests/test_hyperlight_network_witness.py::test_redirect_refusal_requires_the_second_exact_run_proxy_observation`](../tests/test_hyperlight_network_witness.py#L236)
+- [`tests/test_hyperlight_network_witness.py::test_redirect_witness_pairs_permitted_follows_with_contact_free_target_refusal`](../tests/test_hyperlight_network_witness.py#L262)
+- [`tests/test_hyperlight_network_witness.py::test_scope_witness_requires_negative_findings_zero_denied_contacts_and_selected_engine`](../tests/test_hyperlight_network_witness.py#L314)
+- [`tests/test_hyperlight_network_witness.py::test_cache_witness_requires_expiry_and_separate_adopted_gate_evidence`](../tests/test_hyperlight_network_witness.py#L374)
+- [`tests/test_hyperlight_network_witness.py::test_shared_modes_do_not_replay_completed_cases`](../tests/test_hyperlight_network_witness.py#L442)
+- [`tests/test_hyperlight_network_witness.py::test_direct_denial_requires_a_complete_typed_result`](../tests/test_hyperlight_network_witness.py#L464)
+- [`tests/test_hyperlight_network_witness.py::test_named_denial_requires_a_negative_finding`](../tests/test_hyperlight_network_witness.py#L485)
+- [`tests/test_hyperlight_network_witness.py::test_tls_failure_requires_an_observed_guest_error`](../tests/test_hyperlight_network_witness.py#L511)
+- [`tests/test_hyperlight_network_witness.py::test_tls_denial_cause_requires_exact_proxy_audit`](../tests/test_hyperlight_network_witness.py#L544)
+- [`tests/test_hyperlight_network_witness.py::test_continuation_checks_selected_artifacts_before_runtime`](../tests/test_hyperlight_network_witness.py#L594)
+- [`tests/test_hyperlight_network_witness.py::test_complete_driver_runs_only_selected_calls_and_retains_separate_contacts`](../tests/test_hyperlight_network_witness.py#L623)
+- [`tests/test_hyperlight_network_witness.py::test_lifetime_continuation_skips_completed_authority_and_transport_cases`](../tests/test_hyperlight_network_witness.py#L782)
+- [`tests/test_hyperlight_network_witness.py::test_held_response_observes_eof_before_late_release`](../tests/test_hyperlight_network_witness.py#L834)
+- [`tests/test_hyperlight_network_witness.py::test_http_origin_retains_disconnect_and_late_response_observations`](../tests/test_hyperlight_network_witness.py#L855)
+- [`tests/test_hyperlight_network_witness.py::test_teardown_probe_distinguishes_live_closed_and_missing_endpoint`](../tests/test_hyperlight_network_witness.py#L883)
+- [`tests/test_hyperlight_network_witness.py::test_live_delegation_filters_stopped_and_foreign_generations_before_uniqueness`](../tests/test_hyperlight_network_witness.py#L895)
+- [`tests/test_hyperlight_network_witness.py::test_platform_delegate_binds_input_generation_and_live_backend`](../tests/test_hyperlight_network_witness.py#L965)
+- [`tests/test_hyperlight_network_witness.py::test_platform_named_lifetime_observes_http_eof_and_backend_teardown`](../tests/test_hyperlight_network_witness.py#L1003)
+- [`tests/test_hyperlight_network_witness.py::test_named_lifetime_refuses_a_positive_or_unrelated_failure`](../tests/test_hyperlight_network_witness.py#L1063)
+- [`tests/test_hyperlight_network_witness.py::test_cycle_credit_requires_exact_run_gate_and_dependency_reason`](../tests/test_hyperlight_network_witness.py#L1081)
+- [`tests/test_hyperlight_network_witness.py::test_lifetime_driver_requires_fresh_runs_and_current_policy_cache`](../tests/test_hyperlight_network_witness.py#L1108)
+- [`tests/test_hyperlight_network_witness.py::test_platform_named_lifetimes_require_same_subject_freshness_without_direct_replay`](../tests/test_hyperlight_network_witness.py#L1158)
+- [`tests/test_hyperlight_network_witness.py::test_authority_driver_checks_refusal_offline_effects_and_restores_policy`](../tests/test_hyperlight_network_witness.py#L1231)
 
 <a id="witness-tests-test-blackbox-execution-receipt-py"></a>
 ### [`tests/test_blackbox_execution_receipt.py`](../tests/test_blackbox_execution_receipt.py)
@@ -2937,21 +3017,27 @@ Selection: [contracts](../.github/workflows/proxy-rust.yml) (scheduled/manual; c
 - [`cargo test --manifest-path proxy/Cargo.toml --lib jobs::hyperlight::tests::live_console_precedes_completion_and_survives_cancellation -- --exact`](../proxy/src/jobs/hyperlight/tests.rs#L71)
 - [`cargo test --manifest-path proxy/Cargo.toml --lib jobs::hyperlight::tests::console_command_refuses_a_previous_invocations_file_before_spawn -- --exact`](../proxy/src/jobs/hyperlight/tests.rs#L132)
 - [`cargo test --manifest-path proxy/Cargo.toml --lib jobs::hyperlight::tests::pinned_helper_captures_complete_streams_and_removes_runtime -- --exact`](../proxy/src/jobs/hyperlight/tests.rs#L154)
-- [`cargo test --manifest-path proxy/Cargo.toml --lib jobs::hyperlight::tests::operator_selected_artifact_links_still_verify_the_copied_bytes -- --exact`](../proxy/src/jobs/hyperlight/tests.rs#L175)
-- [`cargo test --manifest-path proxy/Cargo.toml --lib jobs::hyperlight::tests::substituted_artifacts_and_manifest_architecture_fail_before_spawn -- --exact`](../proxy/src/jobs/hyperlight/tests.rs#L196)
-- [`cargo test --manifest-path proxy/Cargo.toml --lib jobs::hyperlight::tests::missing_artifacts_identify_role_path_and_os_error_before_discovery -- --exact`](../proxy/src/jobs/hyperlight/tests.rs#L248)
-- [`cargo test --manifest-path proxy/Cargo.toml --lib jobs::hyperlight::tests::missing_or_failed_vm_report_cannot_make_a_successful_helper_exit_pass -- --exact`](../proxy/src/jobs/hyperlight/tests.rs#L312)
-- [`cargo test --manifest-path proxy/Cargo.toml --lib jobs::hyperlight::tests::reaped_helpers_never_signal_a_stale_process_group -- --exact`](../proxy/src/jobs/hyperlight/tests.rs#L325)
-- [`cargo test --manifest-path proxy/Cargo.toml --lib jobs::hyperlight::tests::refused_group_signal_uses_owned_child_termination_and_reaps -- --exact`](../proxy/src/jobs/hyperlight/tests.rs#L358)
-- [`cargo test --manifest-path proxy/Cargo.toml --lib jobs::hyperlight::tests::refused_signals_wait_for_a_delayed_owned_child_exit -- --exact`](../proxy/src/jobs/hyperlight/tests.rs#L377)
-- [`cargo test --manifest-path proxy/Cargo.toml --lib jobs::hyperlight::tests::refused_termination_of_a_live_child_remains_a_cleanup_error -- --exact`](../proxy/src/jobs/hyperlight/tests.rs#L417)
-- [`cargo test --manifest-path proxy/Cargo.toml --lib jobs::hyperlight::tests::unproved_child_disposal_preserves_the_callers_runtime -- --exact`](../proxy/src/jobs/hyperlight/tests.rs#L440)
-- [`cargo test --manifest-path proxy/Cargo.toml --lib jobs::hyperlight::tests::deadline_kills_and_reaps_a_spinning_helper_before_returning -- --exact`](../proxy/src/jobs/hyperlight/tests.rs#L473)
-- [`cargo test --manifest-path proxy/Cargo.toml --lib jobs::hyperlight::tests::cancellation_stops_a_blocked_helper_and_preserves_no_runtime -- --exact`](../proxy/src/jobs/hyperlight/tests.rs#L503)
-- [`cargo test --manifest-path proxy/Cargo.toml --lib jobs::hyperlight::tests::unsupported_authority_is_refused_and_relative_artifacts_follow_adopted_spec -- --exact`](../proxy/src/jobs/hyperlight/tests.rs#L529)
-- [`cargo test --manifest-path proxy/Cargo.toml --lib jobs::hyperlight::tests::template_identity_tracks_frozen_inputs_and_keeps_invocation_authority_separate -- --exact`](../proxy/src/jobs/hyperlight/tests.rs#L554)
-- [`cargo test --manifest-path proxy/Cargo.toml --lib jobs::hyperlight::tests::template_identity_binds_each_verified_runtime_manifest_input -- --exact`](../proxy/src/jobs/hyperlight/tests.rs#L618)
-- [`cargo test --manifest-path proxy/Cargo.toml --lib jobs::hyperlight::tests::shutdown_removes_idle_templates_and_preserves_a_live_mapping_lease -- --exact`](../proxy/src/jobs/hyperlight/tests.rs#L676)
+- [`cargo test --manifest-path proxy/Cargo.toml --lib jobs::hyperlight::tests::github_admission_requires_capture_but_manual_typed_jobs_do_not -- --exact`](../proxy/src/jobs/hyperlight/tests.rs#L175)
+- [`cargo test --manifest-path proxy/Cargo.toml --lib jobs::hyperlight::tests::operator_selected_artifact_links_still_verify_the_copied_bytes -- --exact`](../proxy/src/jobs/hyperlight/tests.rs#L281)
+- [`cargo test --manifest-path proxy/Cargo.toml --lib jobs::hyperlight::tests::substituted_artifacts_and_manifest_architecture_fail_before_spawn -- --exact`](../proxy/src/jobs/hyperlight/tests.rs#L302)
+- [`cargo test --manifest-path proxy/Cargo.toml --lib jobs::hyperlight::tests::missing_artifacts_identify_role_path_and_os_error_before_discovery -- --exact`](../proxy/src/jobs/hyperlight/tests.rs#L354)
+- [`cargo test --manifest-path proxy/Cargo.toml --lib jobs::hyperlight::tests::missing_or_failed_vm_report_cannot_make_a_successful_helper_exit_pass -- --exact`](../proxy/src/jobs/hyperlight/tests.rs#L418)
+- [`cargo test --manifest-path proxy/Cargo.toml --lib jobs::hyperlight::tests::reaped_helpers_never_signal_a_stale_process_group -- --exact`](../proxy/src/jobs/hyperlight/tests.rs#L431)
+- [`cargo test --manifest-path proxy/Cargo.toml --lib jobs::hyperlight::tests::refused_group_signal_uses_owned_child_termination_and_reaps -- --exact`](../proxy/src/jobs/hyperlight/tests.rs#L464)
+- [`cargo test --manifest-path proxy/Cargo.toml --lib jobs::hyperlight::tests::refused_signals_wait_for_a_delayed_owned_child_exit -- --exact`](../proxy/src/jobs/hyperlight/tests.rs#L483)
+- [`cargo test --manifest-path proxy/Cargo.toml --lib jobs::hyperlight::tests::refused_termination_of_a_live_child_remains_a_cleanup_error -- --exact`](../proxy/src/jobs/hyperlight/tests.rs#L523)
+- [`cargo test --manifest-path proxy/Cargo.toml --lib jobs::hyperlight::tests::unproved_child_disposal_preserves_the_callers_runtime -- --exact`](../proxy/src/jobs/hyperlight/tests.rs#L546)
+- [`cargo test --manifest-path proxy/Cargo.toml --lib jobs::hyperlight::tests::deadline_kills_and_reaps_a_spinning_helper_before_returning -- --exact`](../proxy/src/jobs/hyperlight/tests.rs#L579)
+- [`cargo test --manifest-path proxy/Cargo.toml --lib jobs::hyperlight::tests::cancellation_stops_a_blocked_helper_and_preserves_no_runtime -- --exact`](../proxy/src/jobs/hyperlight/tests.rs#L609)
+- [`cargo test --manifest-path proxy/Cargo.toml --lib jobs::hyperlight::tests::stop_reaps_a_helper_that_exited_before_group_signalling -- --exact`](../proxy/src/jobs/hyperlight/tests.rs#L659)
+- [`cargo test --manifest-path proxy/Cargo.toml --lib jobs::hyperlight::tests::exited_helper_recovery_does_not_accept_a_live_helper -- --exact`](../proxy/src/jobs/hyperlight/tests.rs#L677)
+- [`cargo test --manifest-path proxy/Cargo.toml --lib jobs::hyperlight::tests::denied_group_kill_waits_for_delayed_helper_exit -- --exact`](../proxy/src/jobs/hyperlight/tests.rs#L701)
+- [`cargo test --manifest-path proxy/Cargo.toml --lib jobs::hyperlight::tests::stop_kills_descendants_before_reaping_an_exited_leader -- --exact`](../proxy/src/jobs/hyperlight/tests.rs#L729)
+- [`cargo test --manifest-path proxy/Cargo.toml --lib jobs::hyperlight::tests::exited_helper_recovery_never_signals_a_remaining_group -- --exact`](../proxy/src/jobs/hyperlight/tests.rs#L758)
+- [`cargo test --manifest-path proxy/Cargo.toml --lib jobs::hyperlight::tests::unsupported_authority_is_refused_and_relative_artifacts_follow_adopted_spec -- --exact`](../proxy/src/jobs/hyperlight/tests.rs#L781)
+- [`cargo test --manifest-path proxy/Cargo.toml --lib jobs::hyperlight::tests::template_identity_tracks_frozen_inputs_and_keeps_invocation_authority_separate -- --exact`](../proxy/src/jobs/hyperlight/tests.rs#L806)
+- [`cargo test --manifest-path proxy/Cargo.toml --lib jobs::hyperlight::tests::template_identity_binds_each_verified_runtime_manifest_input -- --exact`](../proxy/src/jobs/hyperlight/tests.rs#L870)
+- [`cargo test --manifest-path proxy/Cargo.toml --lib jobs::hyperlight::tests::shutdown_removes_idle_templates_and_preserves_a_live_mapping_lease -- --exact`](../proxy/src/jobs/hyperlight/tests.rs#L928)
 
 <a id="witness-tests-proxy-contracts-test-agent-api-config-py"></a>
 ### [`tests/proxy_contracts/test_agent_api_config.py`](../tests/proxy_contracts/test_agent_api_config.py)
@@ -3172,8 +3258,8 @@ Selection: ignored by default; [contracts](../.github/workflows/proxy-rust.yml) 
 
 Selection: ignored by default.
 
-- [`cargo test --manifest-path proxy/Cargo.toml --test native_coord federation::support::audit::direct_nats_refusals_record_destination_trust_principal_operation_and_phase -- --exact --ignored`](../proxy/tests/native_coord/federation/support_audit.rs#L43) — `#[ignore = "requires pinned NATS; direct authenticated destination refusal audit"]`
-- [`cargo test --manifest-path proxy/Cargo.toml --test native_coord federation::support::audit::remote_final_audit_recovers_after_queue_failure_and_owner_termination -- --exact --ignored`](../proxy/tests/native_coord/federation/support_audit.rs#L228) — `#[ignore = "requires pinned NATS; queue exhaustion and real owner termination"]`
+- [`cargo test --manifest-path proxy/Cargo.toml --test native_coord federation::support::audit::direct_nats_refusals_record_destination_trust_principal_operation_and_phase -- --exact --ignored`](../proxy/tests/native_coord/federation/support_audit.rs#L42) — `#[ignore = "requires pinned NATS; direct authenticated destination refusal audit"]`
+- [`cargo test --manifest-path proxy/Cargo.toml --test native_coord federation::support::audit::remote_final_audit_recovers_after_queue_failure_and_owner_termination -- --exact --ignored`](../proxy/tests/native_coord/federation/support_audit.rs#L227) — `#[ignore = "requires pinned NATS; queue exhaustion and real owner termination"]`
 
 <a id="witness-proxy-tests-native-coord-federation-support-authority-rs"></a>
 ### [`proxy/tests/native_coord/federation/support_authority.rs`](../proxy/tests/native_coord/federation/support_authority.rs)
@@ -3857,7 +3943,7 @@ request with no origin delivery, and protected local API boundaries.
 Exercise scoped jobs, revocation and teardown through an owned proxy.
 
 Requires host Python 3.10+, tomlkit, OpenSSL, candidate CLI/proxy binaries and
-an installed shared Trixie guest. Supply a fresh --instance-dir with traversable parents
+an installed shared Trixie guest. Supply a fresh --root with traversable parents
 and a disk-backed --scratch directory. --admin-port and --upstream-port must be
 free ports authorized for this run. On macOS use the approved physical VZ wrapper
 and a short, owned TMPDIR. This creates a separate instance and retains its saved

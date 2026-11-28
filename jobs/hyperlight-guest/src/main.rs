@@ -6,6 +6,7 @@ use alloc::{
     string::{String, ToString},
     vec::Vec,
 };
+use base64::{Engine, engine::general_purpose::STANDARD};
 use core::sync::atomic::{AtomicUsize, Ordering};
 use hyperlight_guest_bin::{
     error::{ErrorCode, HyperlightGuestError, Result},
@@ -19,8 +20,57 @@ fn read_input(path: String) -> Result<Vec<u8>>;
 #[host_function("SYCall")]
 fn sy_call(request: String) -> Result<String>;
 
+fn proxy_call(request: Value) -> core::result::Result<Value, String> {
+    let reply = sy_call(request.to_string()).map_err(|e| e.message)?;
+    let reply: Value = serde_json::from_str(&reply).map_err(|e| alloc::format!("{e}"))?;
+    if reply["ok"] != true {
+        return Err(reply["error"]
+            .as_str()
+            .unwrap_or("proxy call failed")
+            .into());
+    }
+    Ok(reply["value"].clone())
+}
+
+fn random_bytes(bytes: &mut [u8]) -> core::result::Result<(), getrandom::Error> {
+    let reply = proxy_call(serde_json::json!({"kind":"random","length":bytes.len()}))
+        .map_err(|_| getrandom::Error::UNSUPPORTED)?;
+    let data = reply["data_base64"]
+        .as_str()
+        .ok_or(getrandom::Error::UNSUPPORTED)?;
+    let count = STANDARD
+        .decode_slice(data, bytes)
+        .map_err(|_| getrandom::Error::UNSUPPORTED)?;
+    if count != bytes.len() {
+        return Err(getrandom::Error::UNSUPPORTED);
+    }
+    Ok(())
+}
+getrandom::register_custom_getrandom!(random_bytes);
+
+#[guest_function("NetworkCheck")]
+fn network_check(_argv: String) -> Result<String> {
+    let bytes = read_input(String::from("request.json"))?;
+    let result = safeyolo_checker::network::check(&bytes, proxy_call, || {
+        proxy_call(serde_json::json!({"kind":"time"})).ok()?["unix_seconds"].as_u64()
+    })
+    .map_err(|message| HyperlightGuestError::new(ErrorCode::GuestError, message))?;
+    Ok(alloc::format!("{result}\n"))
+}
+
 #[host_function("InvocationContext")]
 fn invocation_context() -> Result<String>;
+
+/// Selected only by the owned redirect witness, rather than NetworkCheck.
+#[guest_function("NetworkRedirectCheck")]
+fn network_redirect_check(_argv: String) -> Result<String> {
+    let bytes = read_input(String::from("request.json"))?;
+    let result = safeyolo_checker::network::redirect_check(&bytes, proxy_call, || {
+        proxy_call(serde_json::json!({"kind":"time"})).ok()?["unix_seconds"].as_u64()
+    })
+    .map_err(|message| HyperlightGuestError::new(ErrorCode::GuestError, message))?;
+    Ok(alloc::format!("{result}\n"))
+}
 
 #[host_function("InitializationWitness")]
 fn initialization_witness() -> Result<u64>;

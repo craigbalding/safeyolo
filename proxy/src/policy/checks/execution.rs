@@ -1014,16 +1014,9 @@ async fn run(
             )
         }
     };
-    if capture_issue
-        && execution["kind"] == "job"
-        && execution["service_evidence"]
-            .as_array()
-            .is_some_and(|captures| {
-                captures
-                    .iter()
-                    .any(|capture| capture["service"] == "github")
-            })
-    {
+    // GitHub admission needs the checked source even when a job claims a
+    // positive finding without making any independently captured dependency call.
+    if capture_issue && execution["kind"] == "job" {
         match checked_github_input(&execution, &check.inputs, entry.subject.as_ref().unwrap()) {
             Ok(snapshot) => execution["checked_input"] = snapshot,
             Err(error) => {

@@ -222,8 +222,8 @@ pub(crate) async fn serve(
                     }
                 }
             }
-            // Join accepted requests before acknowledging revocation. Reuse
-            // normal listener teardown, including cancellation of open tunnels.
+            // Job listener teardown cancels accepted transports immediately,
+            // then joins them before acknowledging revocation.
             if listener.stop().await.is_ok() {
                 let _ = tokio::time::timeout(TIMEOUT, stream.write_u8(0)).await;
             }
@@ -315,7 +315,7 @@ impl Client {
             run_id: run_id.into(),
             socket_path: path.join("proxy.sock"),
             checks: checks.to_vec(),
-            bind_policy: false,
+            bind_policy: true,
         };
         #[cfg(target_os = "macos")]
         {
@@ -499,7 +499,9 @@ impl Client {
             };
         }
         tokio::time::timeout(TIMEOUT, async {
-            self.stream.write_u8(0).await?;
+            // A policy change can already have closed the management peer.
+            // Its terminal acknowledgment still proves listener cleanup.
+            let _ = self.stream.write_u8(0).await;
             let mut reply = self.stream.read_u8().await?;
             if self.confirmation_pending && reply == 1 {
                 reply = self.stream.read_u8().await?;
@@ -597,7 +599,8 @@ action = "warn"
         let host = uri.authority().unwrap();
         stream.write_all(format!("GET {target} HTTP/1.1\r\nHost: {host}\r\nAuthorization: Bearer {token}\r\nX-SafeYolo-Agent: gate:proof\r\nConnection: close\r\n\r\n").as_bytes()).await.unwrap();
         let mut response = String::new();
-        tokio::time::timeout(TIMEOUT, stream.read_to_string(&mut response))
+        // Bound the observer even if a broken transport fails to terminate.
+        tokio::time::timeout(TIMEOUT * 2, stream.read_to_string(&mut response))
             .await
             .unwrap()
             .unwrap();
@@ -631,6 +634,82 @@ action = "warn"
         drop(confirmation);
         client.close().await.unwrap();
         assert!(!delegation.socket_path.exists());
+        proxy.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn platform_policy_revocation_closes_an_in_flight_response() {
+        let root = tempfile::tempdir().unwrap();
+        let origin = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+        let port = origin.local_addr().unwrap().port();
+        let path = config(root.path(), port);
+        let mut proxy = crate::Proxy::start(crate::native_config::read(&path).unwrap())
+            .await
+            .unwrap();
+        let directory = root.path().join("platform-job");
+        fs::create_dir(&directory).unwrap();
+        let spec = serde_json::from_value(json!({
+            "gate_id":"proof", "argv":["/bin/true"], "network":true,
+            "timeout_seconds":30, "max_input_bytes":0,
+            "max_input_entries":1, "retain_bytes":1024
+        }))
+        .unwrap();
+        let mut client =
+            Client::connect_with_checks(&path, &directory, &spec, &"a".repeat(32), &[])
+                .await
+                .unwrap();
+        let endpoint = directory.join("proxy/proxy.sock");
+        let tokens: serde_json::Value =
+            serde_json::from_str(client.tokens.expose_secret()).unwrap();
+        let token = tokens["simple"].as_str().unwrap().to_owned();
+        let target = format!("http://127.0.0.1:{port}/value");
+        let request_endpoint = endpoint.clone();
+        let pending = tokio::spawn(async move { get(&request_endpoint, &target, &token).await });
+        let (mut upstream, _) = origin.accept().await.unwrap();
+        let mut header = Vec::new();
+        while !header.ends_with(b"\r\n\r\n") {
+            header.push(upstream.read_u8().await.unwrap());
+        }
+        assert!(
+            String::from_utf8(header)
+                .unwrap()
+                .contains("synthetic-job-provider-secret")
+        );
+        let policy = root.path().join("policy.toml");
+        fs::write(
+            &policy,
+            fs::read_to_string(&policy)
+                .unwrap()
+                .replace("egress = \"allow\"", "egress = \"deny\""),
+        )
+        .unwrap();
+        assert!(proxy.reload_policy_if_changed().await.unwrap());
+        // Socket removal marks shutdown admission. Offer the held response
+        // during teardown, rather than waiting out a graceful-drain window.
+        tokio::time::timeout(TIMEOUT, async {
+            while endpoint.exists() {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        let _ = upstream
+            .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 4\r\nConnection: close\r\n\r\nlate")
+            .await;
+        let response = pending.await.unwrap();
+        assert!(!response.starts_with("HTTP/1.1 200"), "{response}");
+        assert!(!response.contains("late"), "{response}");
+        assert!(client.confirm_current().await.is_err());
+        let mut byte = [0];
+        assert_eq!(
+            tokio::time::timeout(TIMEOUT * 2, upstream.read(&mut byte))
+                .await
+                .unwrap()
+                .unwrap(),
+            0
+        );
+        client.close().await.unwrap();
+        assert!(!endpoint.exists());
         proxy.shutdown().await;
     }
 

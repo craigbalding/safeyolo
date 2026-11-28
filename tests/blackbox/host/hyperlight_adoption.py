@@ -74,7 +74,8 @@ class Witness:
     def checked_issue(self, work):
         records = [item for item in work["automatic"] if item["binding"]["boundary"] == "admit_issue"]
         assert len(records) == 1 and records[0]["state"] == "satisfied"
-        capture = records[0]["evidence"]["execution"]["checked_input"]
+        execution = records[0]["evidence"]["execution"]
+        capture = execution["checked_input"]
         raw = base64.b64decode(capture["content_base64"], validate=True)
         assert hashlib.sha256(raw).hexdigest() == capture["sha256"]
         issue = json.loads(raw)
@@ -82,6 +83,10 @@ class Witness:
         assert issue["user"]["id"] == int(self.args.author_id)
         assert issue["url"] == f"https://api.github.com/repos/{self.args.repository}/issues/{self.args.issue}"
         assert "pull_request" not in issue
+        sources = [item for item in execution["service_evidence"] if item["service"] == "github"
+                   and item["method"] == "GET" and item["url"] == issue["url"]]
+        assert len(sources) == 1 and sources[0]["status"] == 200 and sources[0]["error"] is None
+        assert sources[0]["response_sha256"] == capture["sha256"] and sources[0]["response_bytes"] == len(raw)
         return capture, issue
 
     def admit(self):

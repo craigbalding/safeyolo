@@ -260,19 +260,19 @@ nodes:
         - path: guest/build-rootfs.sh
           sha256: ebb58e7846c94e308e5d1c8ba64380c5a5e52e6e5218d4609000698a8afb1612
         - path: proxy/src/jobs.rs
-          sha256: 733661dad815a090a947239979fc4cb6458c8df9fe398bfb6c25d17f4b7b2881
+          sha256: 49e51ec9aac5508cdcc68c5c3bed8073e9a1a1b60a17aea7182af3dd0149c6cc
         - path: proxy/src/jobs/input.rs
           sha256: d7127ef7c4535bb999e3334fce663ee476de785bf9fffd86c4a0ac7382757599
         - path: tests/blackbox/host/job_sandbox.py
           sha256: 988140a3dd9fb99907fa99c7ee073dc768475de50d80a142c439cceecf0a7ad0
         - path: tests/blackbox/host/job_network.py
-          sha256: de068493bd350672bcc5327353337638599cec764dcca69defc611ba88820eaf
+          sha256: b3c181a7e561d512780b67b688950674ba114068886b5d35dd07cc39200df6d4
         - path: proxy/Cargo.toml
           sha256: d7eeb74ad1750018fc8195f55468e37d49e8622f5b540891e43dcc79fda096f7
         - path: proxy/Cargo.lock
           sha256: 09661b6cadf5306856fdb99956967e29c264971f60bb3fa848e710e7e43a0143
         - path: proxy/src/lib.rs
-          sha256: 6d7ee6383f203c423f34ffe23832a721c1a8f892ce6e9ea121ca003d5573d19d
+          sha256: cc26b97eea072dee2e60031f6d704c17f8c6d16cec0ec8bfe2d48d11ff7400d0
         - path: proxy/src/bin/safeyolo.rs
           sha256: 710741ca0897a6a60d48c8bcf4a8fbb2867eaeb9b87fdd8a9bd9900b36ad9118
         - path: scripts/run_claude_blackbox.py
@@ -357,7 +357,7 @@ nodes:
         - path: proxy/src/host_platform.rs
           sha256: 452a13a36a0e00d19d6f4668fd30d8bf1e270356813cfcae2358f30549ab8178
         - path: proxy/src/jobs.rs
-          sha256: 733661dad815a090a947239979fc4cb6458c8df9fe398bfb6c25d17f4b7b2881
+          sha256: 49e51ec9aac5508cdcc68c5c3bed8073e9a1a1b60a17aea7182af3dd0149c6cc
         - path: proxy/src/jobs/input.rs
           sha256: d7127ef7c4535bb999e3334fce663ee476de785bf9fffd86c4a0ac7382757599
         - path: proxy/src/jobs/macos.rs
@@ -365,13 +365,13 @@ nodes:
         - path: tests/blackbox/host/job_sandbox.py
           sha256: 988140a3dd9fb99907fa99c7ee073dc768475de50d80a142c439cceecf0a7ad0
         - path: tests/blackbox/host/job_network.py
-          sha256: de068493bd350672bcc5327353337638599cec764dcca69defc611ba88820eaf
+          sha256: b3c181a7e561d512780b67b688950674ba114068886b5d35dd07cc39200df6d4
         - path: proxy/Cargo.toml
           sha256: d7eeb74ad1750018fc8195f55468e37d49e8622f5b540891e43dcc79fda096f7
         - path: proxy/Cargo.lock
           sha256: 09661b6cadf5306856fdb99956967e29c264971f60bb3fa848e710e7e43a0143
         - path: proxy/src/lib.rs
-          sha256: 6d7ee6383f203c423f34ffe23832a721c1a8f892ce6e9ea121ca003d5573d19d
+          sha256: cc26b97eea072dee2e60031f6d704c17f8c6d16cec0ec8bfe2d48d11ff7400d0
         - path: proxy/src/bin/safeyolo.rs
           sha256: 710741ca0897a6a60d48c8bcf4a8fbb2867eaeb9b87fdd8a9bd9900b36ad9118
         - path: proxy/src/jobs/vz-guest-init.sh
@@ -657,9 +657,9 @@ nodes:
         - path: proxy/tests/native_coord/federation/support_authority.rs
           sha256: fc2936d685b8ed6ab8ba497f86c670e31dcbdf1b05e7ca14151cfc4ad5d42e0e
         - path: proxy/tests/native_coord/federation/support_audit.rs
-          sha256: 9178f9871dce1d402710c7d49edd897e1598fbc92c51eb42e9a68b6bf5bf18f2
+          sha256: 683c4abccca00288ff07645ce96a964b57620039a7f2f652347491228b8f0c64
         - path: proxy/tests/peer_support.rs
-          sha256: 89cea1317f128318dfeb7011d5d57ec71df148e49cd31455e17414944b6de209
+          sha256: be66aa6e28f37f22464ce896c85602532b1711c5f0084255030b2e72237ca0c9
         - path: proxy/tests/peer_support/audit.rs
           sha256: 8fb65b2c49e9fe84d777a484b79f3b7818236d8169fe36bf9d51ee46f8ebc703
         - path: proxy/tests/support/owned_run.rs

@@ -1496,7 +1496,8 @@ uv run --frozen pytest -q cli/tests/test_config.py
 For changed Rust code, use the focused Cargo test and Ubuntu Clippy check through
 `scripts/cargo_with_space.sh` with Cargo's available-CPU default on the configured
 factory host. Set a lower job limit when current memory or contention measurements
-require it. Broaden testing when an observed result warrants it, not to obtain a
+require it. Preserve build serialization, resource observation and the configured
+disk guard. Broaden testing when an observed result warrants it, not to obtain a
 full-suite badge for each candidate.
 
 ### Pull Request Guidelines

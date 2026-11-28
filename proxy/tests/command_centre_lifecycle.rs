@@ -46,9 +46,8 @@ fn setup(root: &Path) -> Config {
     .unwrap();
     let bin = root.join("bin");
     fs::create_dir(&bin).unwrap();
-    let runsc = bin.join("runsc");
-    fs::write(
-        &runsc,
+    owned_run::install_runtime(
+        root,
         r#"#!/bin/sh
 case "$3" in
     state)
@@ -84,9 +83,7 @@ case "$3" in
     *) exit 2 ;;
 esac
 "#,
-    )
-    .unwrap();
-    fs::set_permissions(&runsc, fs::Permissions::from_mode(0o755)).unwrap();
+    );
     unsafe {
         std::env::set_var("SAFEYOLO_CONFIG_DIR", root);
         std::env::set_var("SAFEYOLO_LOG_PATH", root.join("audit.jsonl"));

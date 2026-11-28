@@ -19,6 +19,10 @@ const TOKEN: &str = "command-centre-synthetic-token";
 const AGENT_ID: &str = "ag-11111111111111111111111111111111";
 const HOST_ID: &str = "sy-22222222222222222222222222222222";
 
+#[path = "support/owned_run.rs"]
+#[allow(dead_code)]
+mod owned_run;
+
 #[tokio::test]
 async fn installed_command_centre_keeps_host_identity_and_serves_client_shapes() {
     let directory = TempDir::new().unwrap();
@@ -42,9 +46,7 @@ async fn installed_command_centre_keeps_host_identity_and_serves_client_shapes()
     .unwrap();
     let bin = root.join("bin");
     std::fs::create_dir(&bin).unwrap();
-    let runsc = bin.join("runsc");
-    std::fs::write(&runsc, "#!/bin/sh\nexit 1\n").unwrap();
-    std::fs::set_permissions(&runsc, std::fs::Permissions::from_mode(0o755)).unwrap();
+    owned_run::install_runtime(root, "#!/bin/sh\nexit 1\n");
     let tailscale = bin.join("tailscale");
     std::fs::write(
         &tailscale,

@@ -328,7 +328,7 @@ async fn duplex_relay_retains_dropped_and_spooled_messages_and_open_session() {
         .unwrap()
         .unwrap()
         .unwrap();
-    owner.run(async { Ok(()) }).await;
+    owner.run(async { Ok(()) }, false).await;
     let closed = transcript(&runtime);
     assert_eq!(closed["websocket"]["state"], "closed");
     assert_eq!(closed["websocket"]["closed_by_client"], true);
@@ -503,7 +503,7 @@ async fn compressed_fragmented_relay_inspects_both_directions_and_keeps_controls
         .unwrap()
         .unwrap()
         .unwrap();
-    owner.run(async { Ok(()) }).await;
+    owner.run(async { Ok(()) }, false).await;
     assert!(runtime.audit.shutdown(Duration::from_secs(1)).unwrap());
 }
 
@@ -539,7 +539,7 @@ async fn reached_drop_and_message_survive_diagnostic_failure() {
         owner.clone(),
     )
     .await;
-    owner.run(async { Ok(()) }).await;
+    owner.run(async { Ok(()) }, false).await;
     assert!(matches!(
         result,
         Finished::Reader(Closing {

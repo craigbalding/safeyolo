@@ -241,7 +241,7 @@ class Instance:
         self.index = 0
 
     def command(self, *arguments, input=None):
-        return subprocess.run([str(self.args.cli), "--dangerously-allow-root", "--instance-dir", str(self.root), *arguments],
+        return subprocess.run([str(self.args.cli), "--dangerously-allow-root", "--instance-dir", str(self.root), "--json", *arguments],
                               input=input, check=True, capture_output=True)
 
     def prepare(self, port):
@@ -361,7 +361,7 @@ class Instance:
                 spec["argv"].append("--isolation-probe" if probe == "isolation" else "--probe")
         path = prefix.with_suffix(".spec.json")
         save(path, spec)
-        arguments = [str(self.args.cli), "--instance-dir", str(self.root), "job", "run", str(path),
+        arguments = [str(self.args.cli), "--dangerously-allow-root", "--instance-dir", str(self.root), "--json", "job", "run", str(path),
                      "--input", str(inputs)]
         if console:
             console_path = prefix.with_suffix(".console")
@@ -440,7 +440,10 @@ def check_named_evidence(first, named, path, subject):
     # The executor hashes the exact adopted file bytes, without a prefix.
     assert execution["definition_digest"] == digest(path), execution
     assert named["evidence"]["result"]["subject"] == subject, named
-    assert "retained_base64" not in execution["service_evidence"][0], execution
+    assert execution["service_evidence"], execution
+    for capture in execution["service_evidence"]:
+        assert "retained_base64" not in capture and "request_body_base64" not in capture, execution
+    assert "checked_input" not in execution, execution
     assert execution["gate_principal"] == first["gate_principal"], execution
 
 
@@ -1014,7 +1017,7 @@ def main():
     if not 0 <= args.provider_port <= 65535:
         parser.error("--provider-port must be zero or an authorized port")
     if args.root.exists() or any(args.scratch.iterdir()):
-        parser.error("--instance-dir must be new and --scratch must be empty")
+        parser.error("--root must be new and --scratch must be empty")
     args.scratch.chmod(0o700)
     if len(str(args.root / "driver.sock").encode()) >= 100:
         parser.error("choose a short root for the host's Unix socket limit")

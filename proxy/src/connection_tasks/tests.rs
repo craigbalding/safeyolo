@@ -24,14 +24,17 @@ async fn transferred_child_survives_main_completion_and_joins_before_client_drop
     let supervisor = tokio::spawn(async move {
         let _client = client;
         owner
-            .run(async move {
-                child_owner.spawn(async move {
-                    let _child = child;
-                    let _ = started.send(());
-                    std::future::pending::<()>().await;
-                });
-                Ok(())
-            })
+            .run(
+                async move {
+                    child_owner.spawn(async move {
+                        let _child = child;
+                        let _ = started.send(());
+                        std::future::pending::<()>().await;
+                    });
+                    Ok(())
+                },
+                false,
+            )
             .await;
     });
     ready.await.unwrap();
@@ -59,16 +62,19 @@ async fn main_error_and_panic_cancel_adopted_children() {
         let child = marker(&events, "child");
         let descendants = owner.clone();
         owner
-            .run(async move {
-                descendants.spawn(async move {
-                    let _child = child;
-                    std::future::pending::<()>().await;
-                });
-                if panic {
-                    panic!("owned main failure");
-                }
-                Err("owned main failure".into())
-            })
+            .run(
+                async move {
+                    descendants.spawn(async move {
+                        let _child = child;
+                        std::future::pending::<()>().await;
+                    });
+                    if panic {
+                        panic!("owned main failure");
+                    }
+                    Err("owned main failure".into())
+                },
+                false,
+            )
             .await;
         assert_eq!(*events.lock().unwrap(), ["child"]);
         let weak = Arc::downgrade(&owner);
@@ -98,7 +104,7 @@ async fn tunnel_error_and_panic_cancel_children_after_outer_transfer() {
             }
             Err("owned tunnel failure".into())
         });
-        owner.run(async { Ok(()) }).await;
+        owner.run(async { Ok(()) }, false).await;
         assert_eq!(*events.lock().unwrap(), ["nested"]);
     }
 }
@@ -135,7 +141,7 @@ async fn late_registration_is_aborted_and_running_blocking_work_is_joined() {
     let cleanup = owner.clone();
     let supervisor = tokio::spawn(async move {
         let _client = client;
-        cleanup.run(async { Ok(()) }).await;
+        cleanup.run(async { Ok(()) }, false).await;
     });
     register.send(()).unwrap();
     registration_done.await.unwrap();
@@ -180,7 +186,7 @@ async fn receiver_drop_aborts_actual_driver_and_leaf_panic_remains_local() {
         7,
         "leaf failure does not cancel the relay supervisor"
     );
-    owner.run(async { Ok(()) }).await;
+    owner.run(async { Ok(()) }, false).await;
     assert_eq!(*events.lock().unwrap(), ["driver"]);
 }
 
@@ -196,7 +202,7 @@ async fn hyper_executor_job_is_joined_by_the_same_owner() {
         std::future::pending::<()>().await;
     });
     owner.abort_all();
-    owner.run(async { Ok(()) }).await;
+    owner.run(async { Ok(()) }, false).await;
     assert_eq!(*events.lock().unwrap(), ["hyper-job"]);
 }
 
@@ -209,7 +215,7 @@ async fn closed_owner_never_invokes_new_blocking_work() {
     let work_called = called.clone();
     let work = owner.spawn_blocking(move || work_called.store(true, Ordering::Release));
     assert!(work.await.is_err());
-    owner.run(async { Ok(()) }).await;
+    owner.run(async { Ok(()) }, false).await;
     assert!(!called.load(Ordering::Acquire));
 }
 
@@ -229,7 +235,32 @@ async fn dropped_listener_sender_starts_grace_without_a_self_keeping_sender() {
     drop(stop);
     assert!(error_signal.upgrade().is_none());
     let started = tokio::time::Instant::now();
-    owner.run(async { Ok(()) }).await;
+    owner.run(async { Ok(()) }, false).await;
     assert_eq!(started.elapsed(), Duration::from_secs(10));
     assert_eq!(*events.lock().unwrap(), ["child"]);
+}
+
+#[tokio::test(start_paused = true)]
+async fn revoked_job_cancels_and_joins_transports_without_agent_grace() {
+    for already_stopped in [false, true] {
+        let (stop, receiver) = watch::channel(already_stopped);
+        let owner = ConnectionTasks::new(receiver);
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let client = marker(&events, "client");
+        let child = marker(&events, "transport");
+        owner.spawn(async move {
+            let _child = child;
+            std::future::pending::<()>().await;
+        });
+        let supervisor = tokio::spawn(async move {
+            let _client = client;
+            owner.run(std::future::pending(), true).await;
+        });
+        tokio::task::yield_now().await;
+        let revoked_at = tokio::time::Instant::now();
+        stop.send_replace(true);
+        supervisor.await.unwrap();
+        assert_eq!(tokio::time::Instant::now(), revoked_at);
+        assert_eq!(*events.lock().unwrap(), ["transport", "client"]);
+    }
 }

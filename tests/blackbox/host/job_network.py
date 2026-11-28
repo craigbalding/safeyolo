@@ -1,7 +1,7 @@
 """Exercise scoped jobs, revocation and teardown through an owned proxy.
 
 Requires host Python 3.10+, tomlkit, OpenSSL, candidate CLI/proxy binaries and
-an installed shared Trixie guest. Supply a fresh --instance-dir with traversable parents
+an installed shared Trixie guest. Supply a fresh --root with traversable parents
 and a disk-backed --scratch directory. --admin-port and --upstream-port must be
 free ports authorized for this run. On macOS use the approved physical VZ wrapper
 and a short, owned TMPDIR. This creates a separate instance and retains its saved
@@ -36,10 +36,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from execution_receipt import ProcedureReceipt
 
 
-def prepare(cli: Path, proxy: Path, base: Path, root: Path, port: int, upstream: int):
-    """Reuse installed runtime inputs without changing the original instance."""
-    root.mkdir(mode=0o755)
-    subprocess.run([str(cli), "--dangerously-allow-root", "--instance-dir", str(root), "--json", "init"], check=True)
+def stage_runtime(cli: Path, proxy: Path, base: Path, root: Path):
+    """Link prepared platform inputs into an initialized disposable instance."""
+    root.chmod(0o755)
     selected = base / "current"
     host = selected / "host" if (selected / "share").is_dir() else base
     share = selected / "share" if (selected / "share").is_dir() else base / "share"
@@ -59,6 +58,13 @@ def prepare(cli: Path, proxy: Path, base: Path, root: Path, port: int, upstream:
     # Mapped gVisor processes must traverse the installation's runtime parent.
     # Secret files written by init and the vault retain their private modes.
     (root / "data").chmod(0o755)
+
+
+def prepare(cli: Path, proxy: Path, base: Path, root: Path, port: int, upstream: int):
+    """Reuse installed runtime inputs without changing the original instance."""
+    root.mkdir(mode=0o755)
+    subprocess.run([str(cli), "--dangerously-allow-root", "--instance-dir", str(root), "--json", "init"], check=True)
+    stage_runtime(cli, proxy, base, root)
     config = {
         "admin_port": port,
         "listeners": [],
@@ -93,9 +99,14 @@ enabled = false
 action = "warn"
 ''')
     subprocess.run(
-        [str(cli), "--instance-dir", str(root), "--json", "credentials", "add", "job-secret", "--stdin", "--storage", "local"],
+        [str(cli), "--dangerously-allow-root", "--instance-dir", str(root), "--json", "credentials", "add", "job-secret", "--stdin", "--storage", "local"],
         input=b"synthetic-job-provider-secret\n", check=True,
     )
+    create_upstream_certificate(root)
+
+
+def create_upstream_certificate(root: Path):
+    """Sign an owned loopback origin with the instance's disposable CA."""
     # Use a portable OpenSSL config rather than version-specific -addext flags.
     request = root / "certs/upstream.cnf"
     request.write_text(
@@ -103,6 +114,7 @@ action = "warn"
         "[dn]\nCN=127.0.0.1\n[extensions]\nsubjectAltName=IP:127.0.0.1\n"
         "basicConstraints=critical,CA:FALSE\nkeyUsage=critical,digitalSignature,keyEncipherment\n"
         "extendedKeyUsage=serverAuth\n"
+        "subjectKeyIdentifier=hash\nauthorityKeyIdentifier=keyid,issuer\n"
     )
     subprocess.run(
         ["openssl", "req", "-sha256", "-new", "-newkey", "rsa:2048", "-nodes",
@@ -158,7 +170,7 @@ def job(cli: Path, root: Path, scratch: Path, port: int, index: int):
     output_path = scratch / f"job-{index}.stdout"
     try:
         completed, _records, observed = interrupt_request(
-            [str(cli), "--instance-dir", str(root), "--json", "job", "run", str(spec)], root, None, umask=0o022)
+            [str(cli), "--dangerously-allow-root", "--instance-dir", str(root), "--json", "job", "run", str(spec)], root, None, umask=0o022)
     except subprocess.TimeoutExpired as error:
         output_path.write_bytes(error.stdout or b"")
         (scratch / f"job-{index}.stderr").write_bytes(error.stderr or b"")
@@ -261,7 +273,7 @@ def lifecycle_job(args, mode, observations):
                                                            program(args.upstream_port) + "\nexec sleep 300"],
                                 "network": True, "timeout_seconds": 25 if mode == "expiry" else 90,
                                 "memory_mb": 512, "max_input_bytes": 0, "max_input_entries": 1, "retain_bytes": 4096}))
-    command = [str(args.cli), "--instance-dir", str(args.root), "job", "run", str(spec)]
+    command = [str(args.cli), "--dangerously-allow-root", "--instance-dir", str(args.root), "--json", "job", "run", str(spec)]
     connection = None
     with (args.scratch / f"{mode}.stdout").open("wb") as stdout, (args.scratch / f"{mode}.stderr").open("wb") as stderr:
         with subprocess.Popen(command, stdout=stdout, stderr=stderr, umask=0o022) as child:
@@ -278,25 +290,42 @@ def lifecycle_job(args, mode, observations):
                     time.sleep(0.025)
                 assert child.poll() is None and len(paths) == 1, "job exited before the live authority probe"
                 backend = observe_backend(paths[0].parents[1] / "runtime.json")
+                (args.scratch / f"{mode}.backend.json").write_text(json.dumps(backend))
                 # Only this fixture's scoped token enters memory. Never retain
                 # the services response or put the token in a command argument.
                 authorized = json.loads(subprocess.check_output(
-                    [str(args.cli), "--instance-dir", str(args.root), "services", "authorized", "gate:proof"], timeout=10))
+                    [str(args.cli), "--dangerously-allow-root", "--instance-dir", str(args.root), "--json", "services", "authorized", "gate:proof"], timeout=10))
                 token = authorized["services"]["simple"]["token"]
                 connection = delegated_connection(paths[0], args.upstream_port, args.root / "certs/mitmproxy-ca-cert.pem")
                 assert scoped_request(connection, token) == (200, b"ok")
                 assert len(observations) == count + 2
                 if mode == "revocation":
-                    subprocess.run([str(args.cli), "--instance-dir", str(args.root), "services", "revoke", "gate:proof", "simple"],
+                    subprocess.run([str(args.cli), "--dangerously-allow-root", "--instance-dir", str(args.root), "services", "revoke", "gate:proof", "simple"],
                                    check=True, capture_output=True, timeout=10)
-                    assert scoped_request(connection, token)[0] == 403
+                    try:
+                        status, _ = scoped_request(connection, token)
+                    except (OSError, http.client.HTTPException):
+                        pass  # Policy replacement can close the entire delegated transport.
+                    else:
+                        assert status == 403
                     assert len(observations) == count + 2, "revoked authority reached the origin"
                 if mode != "expiry":
                     child.send_signal(signal.SIGTERM)
                 child.wait(timeout=180)
-                result = json.loads((args.scratch / f"{mode}.stdout").read_text())
-                expected = {"kind": "timeout"} if mode == "expiry" else {"kind": "interrupted", "signal": signal.SIGTERM}
-                assert result["outcome"] == expected and result["observation_error"] is None, result
+                (args.scratch / f"{mode}.exit").write_text(str(child.returncode))
+                if mode == "revocation":
+                    # Current-policy confirmation rejects even a completed guest
+                    # result after revocation. Keep the actual CLI refusal;
+                    # it does not supply an observed guest outcome or streams.
+                    assert (args.scratch / f"{mode}.stdout").read_bytes() == b""
+                    error = (args.scratch / f"{mode}.stderr").read_text().strip()
+                    assert error == "safeyolo: job policy changed or delegation revoked", error
+                    result = {"run_id": paths[0].parents[1].name,
+                              "caller_exit_code": child.returncode, "cli_error": error}
+                else:
+                    result = json.loads((args.scratch / f"{mode}.stdout").read_text())
+                    expected = {"kind": "timeout"} if mode == "expiry" else {"kind": "interrupted", "signal": signal.SIGTERM}
+                    assert result["outcome"] == expected and result["observation_error"] is None, result
                 assert child.returncode == (124 if mode == "expiry" else 1)
                 assert job_directories(args.root) == before
                 ended_delegation(paths[0], connection, token, observations, count + 2)
@@ -313,7 +342,7 @@ def lifecycle_job(args, mode, observations):
                 if connection is not None:
                     connection.close()
                 if mode == "revocation":
-                    subprocess.run([str(args.cli), "--instance-dir", str(args.root), "services", "authorize", "gate:proof", "simple",
+                    subprocess.run([str(args.cli), "--dangerously-allow-root", "--instance-dir", str(args.root), "services", "authorize", "gate:proof", "simple",
                                     "--capability", "reader", "--credential", "job-secret"],
                                    check=True, capture_output=True, timeout=10)
 
@@ -430,7 +459,7 @@ def main():
     if args.admin_port == args.upstream_port or not all(1 <= port <= 65535 for port in (args.admin_port, args.upstream_port)):
         parser.error("supply two distinct, nonzero authorized ports")
     if args.root.exists() or any(args.scratch.iterdir()):
-        parser.error("--instance-dir must be fresh and --scratch must be empty")
+        parser.error("--root must be fresh and --scratch must be empty")
     args.scratch.chmod(0o700)
     run(args)
 

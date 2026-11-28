@@ -1882,6 +1882,7 @@ async fn accept_agents(
     job: Option<jobs::network::Authority>,
 ) {
     let mut connections = JoinSet::new();
+    let job_connection = job.is_some();
     loop {
         tokio::select! {
             biased;
@@ -1954,7 +1955,7 @@ async fn accept_agents(
                                     connection.http_error(error.as_ref());
                                 }
                                 result
-                            })
+                            }, job_connection)
                             .await;
                         if let Some(disconnect_monitor) = disconnect_monitor {
                             disconnect_monitor.abort();
@@ -1978,8 +1979,8 @@ async fn accept_agents(
         }
     }
     drop(listener);
-    // Cleanup supervisors are never aborted: they cancel transport tasks after
-    // the existing grace and join tracked transport tasks before dropping the client.
+    // Cleanup supervisors are never aborted. Job transports cancel immediately;
+    // ordinary agent transports retain their grace. Both join before client drop.
     if let Some(stop_signal) = stop_signal.upgrade() {
         stop_signal.send_replace(true);
     }

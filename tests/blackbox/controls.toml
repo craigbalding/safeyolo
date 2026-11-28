@@ -343,7 +343,7 @@ control = "Named policy checks"
 source = "https://github.com/craigbalding/safeyolo/issues/1543"
 what = "Composition, evidence type, freshness and subject binding govern actual requests."
 existing = "Accepted #1543/#1544/#1546 fixtures; maintained named-checks and policy-recipe phases."
-conformance = "Maintained native named-checks and pytest policy-recipe phases cover composition, binding, freshness, unknown/error, redirect and pending revocation. Preview observes zero assessed-target/dependency contact. The prepared real-job case remains required and incomplete without its selected host."
+conformance = "Maintained native named-checks and pytest policy-recipe phases cover composition, binding, freshness, unknown/error, redirect and pending revocation. Preview observes zero assessed-target/dependency contact. The shared hyperlight_network.py host witness uses the same adopted job for direct and named calls across platform and Hyperlight engines. Its caller, scope and lifetime modes cover gate authority, dependency cycles, contact-free preview and bound cached evidence on the selected real host. The separate prepared native real-job case remains required and incomplete without its selected host."
 effort = "L"
 comments = "Retain accepted [typed/composition proof](https://github.com/craigbalding/safeyolo/issues/1543#issuecomment-6854609584), [job/service proof](https://github.com/craigbalding/safeyolo/issues/1544#issuecomment-6858612088), #1546 and [maintained BB-29 acceptance](https://github.com/craigbalding/safeyolo/issues/1563#issuecomment-6901839101). The 30 nonignored native cases have [partial scheduled process evidence](https://github.com/craigbalding/safeyolo/actions/runs/43707854900/job/132807509327) at `d43ba93d`, before a later transport-test failure. The prepared real-job case was ignored. The focused receipt remains manual and incomplete without that case. These process/installed-layout selections boot no guest; no new installed-platform or live-provider pass is inferred."
 owner = "#1563"
@@ -367,7 +367,7 @@ control = "Hyperlight capabilities"
 source = "https://github.com/craigbalding/safeyolo/issues/1550"
 what = "Both engines receive only adopted scoped capabilities; revoked/expired invocations cannot retain authority."
 existing = "Accepted #1549/#1550/#1552 engine fixtures; manual two-engine driver and native mediated-services phase."
-conformance = "The shared real-engine driver covers permitted GitHub reads, destination/method/path/repository and socket/DNS/direct-IP/ABI refusal, finite limits, cancellation/revocation/shutdown and late completion. Per-engine checkpoints and owned cleanup are required. Native mediated-services tests alone establish no VM boundary."
+conformance = "The shared real-engine driver covers permitted GitHub reads, destination/method/path/repository and socket/DNS/direct-IP/ABI refusal, finite limits, cancellation/revocation/shutdown and late completion. The hyperlight_network.py host witness adds public HTTP/TLS access without a Gateway grant, independent gate authority, scope and lifetime modes, and an explicit one-hop redirect mode for clients that follow redirects. It accepts the installed bundle or prepared platform runtime; job_network.py retains platform Gateway and direct lifecycle coverage. Per-engine checkpoints and owned cleanup are required. Native mediated-services tests alone establish no VM boundary."
 effort = "L"
 comments = "Retain [maintained two-engine acceptance](https://github.com/craigbalding/safeyolo/issues/1563#issuecomment-6902006974), [engine evidence](https://github.com/craigbalding/safeyolo/issues/1552#issuecomment-6877115753) and [installed adoption proof](https://github.com/craigbalding/safeyolo/issues/1552#issuecomment-6877595456) at their recorded sources, profiles and Linux/Mac limits. The maintained execution used pinned accepted debug artifacts; it is not current-production qualification. Six native bridge cases have [partial scheduled process evidence](https://github.com/craigbalding/safeyolo/actions/runs/43707854900/job/132807509327) at `d43ba93d`, before a later transport-test failure; these cases prove no VM boundary. KVM/HVF, compatible artifacts and scoped GitHub credentials are explicit prerequisites for the manual two-engine driver. A missing engine or lifetimes-only run cannot complete its receipt. The selected AMD64 engine dispatch is deployed through the daily devstack rundeck caller. Its natural 19 November 2026 run 7fd9c86285a64d76af2ec5daaebad022 passed the engine phase; the five-dispatch adapter and cleanup returned zero. The independently reviewed recurrence receipt retains source, run and phase operands; no separate ARM64 recurrence is inferred. See the [independent AMD64 cadence disposition](https://github.com/craigbalding/safeyolo/issues/1563#issuecomment-6967616840)."
 owner = "#1563"
@@ -379,7 +379,7 @@ control = "Before/after enforcement"
 source = "https://github.com/craigbalding/safeyolo/issues/1551"
 what = "Required checks bind to the exact operation/output; follow-up effects are durable without unsafe external retry."
 existing = "Accepted #1551 native transition fixtures; maintained before-after phase."
-conformance = "Real native Work/service boundaries cover omitted selectors, stale/substituted evidence, exact output replacement, pending revocation, committed-obligation recovery, crash after dispatch and explicit uncertainty without automatic replay. Follow-up failure cannot undo the committed transition."
+conformance = "Real native Work/service boundaries cover omitted selectors, stale/substituted evidence, exact output replacement, pending revocation, committed-obligation recovery, crash after dispatch and explicit uncertainty without automatic replay. The hyperlight_adoption.py installed witness consumes the independently captured GitHub snapshot, derives and retains an output artifact, and exercises automatic output checks alongside required independent review. Generic job findings do not replace required source capture. Follow-up failure cannot undo the committed transition."
 effort = "L"
 comments = "Retain [maintained BB-32 acceptance](https://github.com/craigbalding/safeyolo/issues/1563#issuecomment-6901839101). All eleven native transition cases have [partial scheduled process evidence](https://github.com/craigbalding/safeyolo/actions/runs/43707854900/job/132807509327) at `d43ba93d`, before a later transport-test failure. The focused receipt remains manual. Owned effect counters and controlled providers observe enforcement. These process results do not establish an external GitHub merge/release boundary or repeat #1552 installed factory proof."
 owner = "#1563"
@@ -799,6 +799,37 @@ scope = "Host job authoring and adoption; controlled adapters"
 adapter = "Controlled build/runner adapters; not a live Hyperlight boundary pass"
 
 [[witnesses]]
+paths = ["tests/test_hyperlight_proxy_client.py", "tests/test_hyperlight_rootfs.py"]
+controls = ["BB-31"]
+kind = "pytest"
+scope = "HTTP/TLS client libraries and guest SSL packaging on the host CPU"
+adapter = "Real HTTP/OpenSSL/Rustls over fragmented fixture proxy bytes; optional assembled-image Python adapter; pinned-package and CPIO controls. No VM, native delegation, gate policy or isolation claim"
+
+[[witnesses]]
+paths = ["proxy/src/jobs/proxy_stream.rs"]
+controls = ["BB-29", "BB-31"]
+kind = "cargo"
+scope = "Native delegated proxy byte transport; host process"
+adapter = "Real proxy and owned origin; no guest client or VM execution"
+target = "lib"
+module = "jobs::proxy_stream::tests"
+owner = "proxy/src/jobs/proxy_stream.rs"
+
+[[witnesses]]
+paths = ["tests/test_hyperlight_network_witness.py"]
+controls = ["BB-29", "BB-31"]
+kind = "pytest"
+scope = "HTTP/HTTPS, shared engine scopes and authority/lifetime witness controls"
+adapter = "Retained Core observations, actual platform curl client over owned proxy sockets, and controlled job adapters with loopback HTTP/TLS, EOF, process-birth/backend teardown, endpoint, contact and cache assertions; no VM or installed authority claim"
+
+[[witnesses]]
+paths = ["tests/blackbox/host/hyperlight_network.py::main"]
+controls = ["BB-29", "BB-31"]
+kind = "procedure"
+scope = "Manual installed public-network direct/named witness for the selected job engine"
+adapter = "Shared public HTTP/HTTPS cases select Hyperlight bundles or installed gVisor/VZ inputs. Separate scope/caller modes cover method/path/destination refusal, adopted gates, expiry, cycle and offline effects. The scope HTTP 302 case proves only a negative finding without following. The separate redirect mode follows one hop in each guest engine; Core selects the diagnostic NetworkRedirectCheck. It pairs allowed targets with scope removal and requires exact-run proxy denial plus no target contact. Lifetime mode retains Hyperlight direct/named cases and selects only platform named deadline/revocation cases, with held EOF, backend teardown, same-subject late-result discard, policy invalidation, expiry and subject/gate cache separation. Unrun modes/platforms remain unqualified, with no recurring maintained-run claim"
+
+[[witnesses]]
 paths = ["tests/test_blackbox_execution_receipt.py", "tests/test_blackbox_catalogue.py"]
 controls = ["BB-36"]
 kind = "pytest"
@@ -1054,7 +1085,7 @@ paths = ["proxy/src/jobs/hyperlight/tests.rs"]
 controls = ["BB-31"]
 kind = "cargo"
 scope = "Native Rust; host OS/cfg and ignore attributes are retained per source"
-adapter = "Controlled executable-helper supervisor; no VM or Python checker execution"
+adapter = "Controlled executable-helper supervisor and real job/check/admission pipeline; no VM or Python checker execution"
 target = "lib"
 module = "jobs::hyperlight::tests"
 owner = "proxy/src/jobs/hyperlight.rs"
