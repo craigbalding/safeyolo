@@ -108,6 +108,16 @@ After adoption, use `resume BINDING` and authenticated discovery. Resume can
 activate only the exact task document selected in that binding; it accepts no
 caller replacement policy. A conflicting active task must be resolved explicitly.
 
+If `resume` reports an expired task credential, inspect the binding and its current
+owner-adopted grant separately. On the issuing host, the trusted credential
+owner runs `safeyolo credentials refresh-host-task BINDING` for that same instance.
+This updates only the retained credential expiry, bounded by current grant and
+authority freshness. It preserves the original signing key, enrolment and task;
+it starts no target work. An expired or revoked grant still needs its existing
+policy owner. Do not re-enrol the target or copy signing secrets to recover this
+credential. After a lost refresh reply, read credential metadata and the current
+binding before resuming the original task.
+
 After a lost preparation reply, use `setup-status --original-request-id ORIGINAL_ID`.
 After a lost `submit-setup` reply, add `--submitted` to read the original
 policy-change request through the approval owner. Failure output carries the

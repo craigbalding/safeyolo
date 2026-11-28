@@ -125,7 +125,7 @@ impl Binding {
             .as_deref()
             == Some(self.issuer_id.as_str())
     }
-    fn grant(&self) -> Result<&Grant, Refusal> {
+    pub(super) fn grant(&self) -> Result<&Grant, Refusal> {
         self.target
             .issuers
             .get(&self.issuer_id)
@@ -345,14 +345,17 @@ pub(crate) async fn resume(
         .credential()
         .is_expired(time::OffsetDateTime::now_utc())?
     {
-        return Err("host task credential expired".into());
+        return Err(format!("host task credential expired; on the issuing host use credentials refresh-host-task {name} within its current adopted grant, then resume this binding").into());
     }
     let saved = super::setup::read_key(snapshot.credential())?;
     crate::resume_host_task(state, |runtime| {
         let policy = runtime.policy.as_ref().ok_or("host policy unavailable")?;
         let binding = binding(policy, name)?;
         let principal = binding.eligible_run(runtime, run)?;
-        super::setup::owner(&saved.request, runtime, run)?;
+        // The original enrolment remains a dated receipt. An explicit owner
+        // refresh may replace credential expiry under a later adopted grant.
+        // Current grant and credential expiry were both checked above.
+        super::setup::owner_identity(&saved.request, runtime, run)?;
         if !loaded.vault.is_current(&snapshot)? {
             return Err("host task credential changed; inspect the selected setup".into());
         }

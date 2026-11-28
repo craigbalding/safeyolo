@@ -97,6 +97,16 @@ pub(super) fn owner(
     runtime: &crate::Runtime,
     run: &AgentRun,
 ) -> Result<(), Error> {
+    owner_identity(request, runtime, run)?;
+    request.validate()?;
+    Ok(())
+}
+
+pub(super) fn owner_identity(
+    request: &EnrolmentRequest,
+    runtime: &crate::Runtime,
+    run: &AgentRun,
+) -> Result<(), Error> {
     let policy = runtime.policy.as_ref().ok_or("host policy unavailable")?;
     let same = request.principal.run == *run
         || request.plan.allow_run_refresh
@@ -105,8 +115,90 @@ pub(super) fn owner(
     if !run.current(policy) || !same || request.issuer_id != issuer(runtime)? {
         return Err("host setup belongs to another current agent, task or issuing instance".into());
     }
-    request.validate()?;
     Ok(())
+}
+
+/// The trusted issuing host may refresh an existing task credential only to
+/// current adopted authority. This never refreshes grants or enrols a target.
+pub(crate) async fn refresh_task_credential(
+    state: &RuntimeState,
+    name: &str,
+) -> Result<Value, Error> {
+    let runtime = state
+        .read()
+        .map_err(|_| "host runtime unavailable")?
+        .clone();
+    let before = super::gateway::binding(
+        runtime.policy.as_ref().ok_or("host policy unavailable")?,
+        name,
+    )?;
+    let loaded = runtime
+        .gateway_vault
+        .load_async()
+        .await?
+        .ok_or("host task credential store unavailable; unlock its existing store")?;
+    loaded.vault.reload_if_changed()?;
+    let snapshot = loaded
+        .vault
+        .snapshot(&before.credential)?
+        .ok_or("retained host task unavailable")?;
+    let saved = read_key(snapshot.credential())?;
+    let current = state.read().map_err(|_| "host runtime unavailable")?;
+    let policy = current.policy.as_ref().ok_or("host policy unavailable")?;
+    let binding = super::gateway::binding(policy, name)?;
+    if revision(&binding) != revision(&before) || !binding.resume_task {
+        return Err("host binding changed or has no adopted task continuation; inspect it before refreshing".into());
+    }
+    let grant = binding.grant()?;
+    let run = policy
+        .agent_run(&grant.principal.run.agent)
+        .ok_or("current host-observed agent run unavailable")?;
+    let principal = binding.eligible_run(&current, &run)?;
+    owner_identity(&saved.request, &current, &run)?;
+    let trust = &binding.target.issuers[&binding.issuer_id];
+    if saved.request.target_id != binding.target.target_id
+        || saved.request.issuer_id != binding.issuer_id
+        || saved.request.task_revision != binding.task_revision
+        || revision(&saved.task_document) != binding.task_revision
+        || saved.request.principal.task_id != principal.task_id
+        || saved.request.key_id != binding.key_id
+        || trust.public_keys.get(&binding.key_id) != Some(&saved.request.public_key)
+    {
+        return Err(
+            "retained host task, signing key or binding changed; inspect the selected setup".into(),
+        );
+    }
+    let expiry = grant.expires_at.min(trust.authority.valid_until).min(
+        trust
+            .authority
+            .observed_at
+            .saturating_add(binding.target.max_authority_age_seconds),
+    );
+    let expiry = time::OffsetDateTime::from_unix_timestamp(i64::try_from(expiry)?)?
+        .format(&time::format_description::well_known::Rfc3339)?;
+    let previous = snapshot.credential().expires_at.clone();
+    let changed = previous.as_deref() != Some(expiry.as_str());
+    if !changed && !loaded.vault.is_current(&snapshot)? {
+        return Err("host task credential changed; inspect it before refreshing".into());
+    }
+    if changed {
+        let mut replacement = snapshot.credential().clone();
+        replacement.expires_at = Some(expiry.clone());
+        // The current policy read guard prevents a concurrent grant change
+        // while the vault conditionally publishes this metadata-only update.
+        if !loaded
+            .vault
+            .replace_if_current(&snapshot, replacement, |_| Ok(()))?
+        {
+            return Err("host task credential changed; inspect it before refreshing".into());
+        }
+    }
+    Ok(
+        json!({"binding":name,"credential":binding.credential,"target_id":binding.target.target_id,
+        "previous_expires_at":previous,"expires_at":expiry,"changed":changed,
+        "authority_revision":trust.authority.revision,"original_enrolment":"preserved",
+        "target_execution":"not_started"}),
+    )
 }
 
 pub(crate) async fn prepare(
