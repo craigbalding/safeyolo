@@ -20,10 +20,32 @@ permissions:
   contents: read
 
 jobs:
-  check:
-    name: Check the pinned gVisor release
+  verify:
+    name: Verify the pinned gVisor release check
+    if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Print advisory and age findings
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: python3 scripts/check_gvisor_pin.py --dry-run
+
+  check:
+    name: Check the pinned gVisor release
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    # All issue writers share a group, including manual runs on different refs.
+    concurrency:
+      group: gvisor-pin-issues
+      cancel-in-progress: false
     permissions:
       contents: read
       issues: write
@@ -35,6 +57,4 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
-          # A pull request prints the findings and opens no issue.
-          MODE: ${{ github.event_name == 'pull_request' && '--dry-run' || '' }}
-        run: python3 scripts/check_gvisor_pin.py $MODE
+        run: python3 scripts/check_gvisor_pin.py

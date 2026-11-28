@@ -29,8 +29,8 @@ ADVISORIES = "repos/google/gvisor/security-advisories?state=published&per_page=1
 LABEL = "gvisor-pin"
 STALE_DAYS = 30
 RELEASE = re.compile(r"release-(\d{4})(\d{2})(\d{2})\.(\d+)")
-# gVisor names a fixed version by its release date, with or without a prefix.
-FIXED_DATE = re.compile(r"(20\d{2})(\d{2})(\d{2})")
+# gVisor names fixes by release tag, bare release version or Go pseudo-version.
+FIXED_VERSION = re.compile(r"(20\d{2}\d{2}\d{2})(?:\.(\d+))?")
 
 
 def release_order(tag: str) -> tuple[datetime.date, int]:
@@ -57,32 +57,34 @@ def newest_release(tags: list[str]) -> str:
     return max(releases, key=release_order)
 
 
-def fixed_dates(advisory: dict) -> list[datetime.date]:
-    """Return the release dates that the advisory names as fixed."""
-    dates = []
+def fixed_releases(advisory: dict) -> list[str]:
+    """Return fixed releases, retaining any named release sequence."""
+    releases = []
     for vulnerability in advisory.get("vulnerabilities") or []:
-        for match in FIXED_DATE.finditer(vulnerability.get("patched_versions") or ""):
-            year, month, day = (int(group) for group in match.groups())
-            dates.append(datetime.date(year, month, day))
-    return dates
+        for match in FIXED_VERSION.finditer(vulnerability.get("patched_versions") or ""):
+            date, sequence = match.groups()
+            # Date-only and Go pseudo-versions do not name a release sequence.
+            releases.append(f"release-{date}.{sequence or '0'}")
+    return releases
 
 
 def advisory_findings(advisories: list[dict], pin: str) -> list[dict]:
     """Return the advisories that the pinned release may not include a fix for."""
-    pin_date = release_order(pin)[0]
+    pin_order = release_order(pin)
     findings = []
     for advisory in advisories:
-        dates = fixed_dates(advisory)
-        if dates:
+        releases = fixed_releases(advisory)
+        if releases:
+            latest_fix = max(releases, key=release_order)
             # The pin has the fix when it is at least as new as every fixed release.
-            if max(dates) <= pin_date:
+            if release_order(latest_fix) <= pin_order:
                 continue
-            reason = f"The advisory names a fix in a release dated {max(dates)}, after the pin."
+            reason = f"The advisory names a fix in {latest_fix}, after the pin."
         else:
             # Without a fixed release, an advisory published before the pin was
             # cut is taken as fixed in it. A later one needs a person to check.
             published = datetime.date.fromisoformat(advisory["published_at"][:10])
-            if published < pin_date:
+            if published < pin_order[0]:
                 continue
             reason = "The advisory names no fixed release and was published after the pin was cut."
         findings.append({
@@ -99,23 +101,23 @@ def advisory_findings(advisories: list[dict], pin: str) -> list[dict]:
     return findings
 
 
-def stale_finding(pin: str, newest: str, today: datetime.date) -> dict | None:
-    """Return a finding when the pin is too old and upstream has a newer release."""
-    age = (today - release_order(pin)[0]).days
-    if release_order(newest) <= release_order(pin) or age <= STALE_DAYS:
+def stale_finding(pin: str, newest: str) -> dict | None:
+    """Return a finding when the pin is too far behind the newest release."""
+    gap = (release_order(newest)[0] - release_order(pin)[0]).days
+    if gap <= STALE_DAYS:
         return None
     return {
         "key": f"stale {pin}",
         "title": f"Bundled gVisor {pin} is more than {STALE_DAYS} days behind upstream",
         "lines": [
-            f"The pin is {age} days old. The newest upstream release is {newest}.",
+            f"The pin is {gap} days older than the newest upstream release, {newest}.",
             "Not every upstream security fix gets an advisory, so an old pin can lack fixes that this check cannot see.",
         ],
     }
 
 
 def run(*command: str, cwd: Path | None = None) -> str:
-    return subprocess.run(command, cwd=cwd, check=True, capture_output=True, text=True).stdout
+    return subprocess.run(command, cwd=cwd, check=True, stdout=subprocess.PIPE, text=True).stdout
 
 
 def upstream_tags() -> list[str]:
@@ -151,8 +153,10 @@ def issue_body(finding: dict, pin: str, newest: str) -> str:
 
 def reported_keys() -> set[str]:
     """Return the check keys of every issue this check opened, open or closed."""
-    issues = json.loads(run("gh", "issue", "list", "--label", LABEL, "--state", "all", "--limit", "500", "--json", "body"))
-    return {line.removeprefix("Check key: ") for issue in issues for line in issue["body"].splitlines()
+    endpoint = f"repos/{{owner}}/{{repo}}/issues?state=all&labels={LABEL}&per_page=100"
+    pages = json.loads(run("gh", "api", "--paginate", "--slurp", endpoint))
+    return {line.removeprefix("Check key: ") for page in pages for issue in page
+            for line in (issue.get("body") or "").splitlines()
             if line.startswith("Check key: ")}
 
 
@@ -164,7 +168,7 @@ def main() -> int:
     pin = pinned_release((ROOT / "scripts/build_runsc.sh").read_text())
     newest = newest_release(upstream_tags())
     findings = advisory_findings(published_advisories(), pin)
-    stale = stale_finding(pin, newest, datetime.datetime.now(datetime.UTC).date())
+    stale = stale_finding(pin, newest)
     if stale is not None:
         findings.append(stale)
     print(f"pinned {pin}; newest upstream {newest}; {len(findings)} finding(s)")
@@ -179,6 +183,7 @@ def main() -> int:
             print(f"\n## {finding['title']}\n{body}")
         else:
             print(run("gh", "issue", "create", "--title", finding["title"], "--label", LABEL, "--body", body).strip())
+            known.add(finding["key"])
     return 0
 
 
