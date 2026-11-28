@@ -302,7 +302,7 @@ fn stage(root: &Path, runtime: &Path, reuse: Option<&Path>) -> Result<(), Error>
         }
     }
     std::os::unix::fs::symlink(&bin, root.join("bin"))?;
-    for name in ["lib", "libexec", "assets", "package-info"] {
+    for name in ["lib", "libexec", "assets", "package-info", "SHA256SUMS"] {
         let source = runtime.join(name);
         if source.try_exists()? {
             std::os::unix::fs::symlink(source.canonicalize()?, root.join(name))?;

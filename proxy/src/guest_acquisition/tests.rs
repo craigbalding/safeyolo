@@ -159,11 +159,13 @@ fn package_guest_allows_only_known_installed_runsc_pins() {
     );
     let stock_version = "release-20261005.0";
     let stock_source = "https://github.com/google/gvisor/releases/tag/release-20261005.0";
-    let patched_version = "release-20261005.0-safeyolo.1";
+    let patched_version = "release-20261005.0-safeyolo.2";
     let patched_source =
         "https://github.com/google/gvisor/commit/97e8e896904cb364319cd9758241d3f0bd27a6f4";
+    let earlier_patched_version = "release-20261005.0-safeyolo.1";
     for (version, source, target_allowed) in [
         (stock_version, stock_source, false),
+        (earlier_patched_version, patched_source, false),
         (patched_version, patched_source, true),
     ] {
         let metadata =
@@ -171,10 +173,6 @@ fn package_guest_allows_only_known_installed_runsc_pins() {
         fs::write(&path, &metadata).unwrap();
         assert_eq!(PackageGuest::read(&path, false).is_ok(), target_allowed);
         assert!(PackageGuest::read(&path, true).is_ok());
-        assert_eq!(
-            packaged_runsc_version(temp.path()).unwrap().as_deref(),
-            Some(version)
-        );
         for bad in [
             metadata.replace(source, "https://example.test/runsc"),
             metadata.replace("runsc_origin=bundled", "runsc_origin=system"),
@@ -376,7 +374,6 @@ mod linux {
                 discovery_tag: "compat-v1".into(),
                 repository: format!("{}/guest", self.address),
                 platform: consumer_platform().unwrap(),
-                runsc_version: None,
             }
         }
 

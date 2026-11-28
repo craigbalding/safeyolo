@@ -134,4 +134,4 @@ index b4b3614..1e4557e 100755
 
  # The STABLE_ prefix will trigger a re-link if it changes.
 -echo STABLE_VERSION "$(git describe --always --tags --exclude 'release-*-staging' --abbrev=12 --dirty 2>/dev/null || echo 0.0.0)"
-+echo STABLE_VERSION release-20261005.0-safeyolo.1
++echo STABLE_VERSION release-20261005.0-safeyolo.2

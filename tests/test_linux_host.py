@@ -29,7 +29,11 @@ FILES = ("runsc", "gvisor-bin/gvisor-sentry-prewarmer", "gvisor-bin/gvisor_sentr
 
 
 def command(binary, *arguments, **kwargs):
-    return subprocess.run([str(binary), "--dangerously-allow-root", *map(str, arguments)], capture_output=True,
+    # Host-tool probes keep their own arguments; only SafeYolo takes this flag.
+    root_override = ["--dangerously-allow-root"] if (
+        Path(binary).name == "safeyolo" or str(binary) == os.environ.get("SAFEYOLO_NATIVE_CLI")
+    ) else []
+    return subprocess.run([str(binary), *root_override, *map(str, arguments)], capture_output=True,
                           text=True, timeout=30, **kwargs)
 
 
@@ -132,7 +136,7 @@ def test_retained_systrap_caller_remaps_only_its_private_copy(native_cli, owned_
 
 def payload(path):
     (path / "gvisor-bin").mkdir(parents=True)
-    executable(path / "runsc", "runsc version release-20261005.0-safeyolo.1")
+    executable(path / "runsc", "runsc version release-20261005.0-safeyolo.2")
     for name in FILES[1:]:
         shutil.copy2(path / "runsc", path / name)
     return path / "runsc"
@@ -544,7 +548,7 @@ def test_doctor_keeps_selected_system_identity_when_runtime_disappears(native_cl
     assert first.returncode == json.loads(first.stdout)["exit_code"], first.stderr
     observed = next(check["details"] for check in json.loads(first.stdout)["checks"] if check["name"] == "Linux runtime and namespaces")
     assert observed["path"] == str(runtime) and observed["origin"] == "system"
-    assert observed["version"] == "release-20261005.0-safeyolo.1"
+    assert observed["version"] == "release-20261005.0-safeyolo.2"
     tools = parent / "tools"
     tools.mkdir()
     (tools / "getent").symlink_to(shutil.which("getent"))
@@ -556,7 +560,7 @@ def test_doctor_keeps_selected_system_identity_when_runtime_disappears(native_cl
     assert "newuidmap" in observed["error"] and "newgidmap" in observed["error"]
     assert "zstd" not in observed["error"]
     assert observed["path"] == str(runtime) and observed["origin"] == "system"
-    assert observed["version"] == "release-20261005.0-safeyolo.1"
+    assert observed["version"] == "release-20261005.0-safeyolo.2"
     for name in ("newuidmap", "newgidmap", "setfacl", "getfacl", "unshare",
                  "nsenter", "ip", "ssh", "curl", "tar", "true", "aa-exec"):
         path = shutil.which(name)
