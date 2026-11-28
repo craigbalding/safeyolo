@@ -79,7 +79,12 @@ fn policy_capabilities_explain_definitions_without_exposing_internal_records() {
     assert!(!root.exists());
     let machine = stdout(cli(&root, &["policy", "capabilities", "--json"]));
     let machine: Value = serde_json::from_str(&machine).unwrap();
-    assert_eq!(machine, safeyolo_proxy::policy::capabilities::discover());
+    // The selected CLI can be a production build while this driver is a test build.
+    let mut actual = machine.clone();
+    let mut expected = safeyolo_proxy::policy::capabilities::discover();
+    actual.as_object_mut().unwrap().remove("build_profile");
+    expected.as_object_mut().unwrap().remove("build_profile");
+    assert_eq!(actual, expected);
     let binding = machine["definitions"]
         .as_array()
         .unwrap()
