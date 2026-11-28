@@ -596,6 +596,12 @@ fn show_review_time(label: &str, value: &Value) {
     );
 }
 
+fn show_host_operation_bounds(scope: &Value) {
+    for key in ["resources", "arguments", "budgets", "updates", "checks"] {
+        show_review_fact(&format!("    {}", key.replace('_', " ")), &scope[key]);
+    }
+}
+
 // Policy fields can contain JSON-encoded native definitions. Compare their
 // values too, so changing one grant does not print the complete target twice.
 fn show_policy_value_change(path: &str, before: &Value, after: &Value) {
@@ -737,7 +743,7 @@ fn show_policy_decision_summary(assessment: &Value) {
         if previous == Some(binding) {
             continue;
         }
-        println!("Host authority in effect after adoption:");
+        println!("Proposed host authority:");
         for key in [
             "binding",
             "target_id",
@@ -764,6 +770,23 @@ fn show_policy_decision_summary(assessment: &Value) {
                 &format!("  {}", key.replace('_', " ")),
                 &binding["full_grant"][key],
             );
+        }
+        for (operation, scope) in binding["full_grant"]["operations"]
+            .as_object()
+            .into_iter()
+            .flatten()
+        {
+            println!("  Granted operation {}:", safe(operation));
+            show_host_operation_bounds(scope);
+        }
+        for family in binding["full_grant"]["families"]
+            .as_array()
+            .into_iter()
+            .flatten()
+        {
+            show_review_fact("  Standing operation prefix", &family["prefix"]);
+            show_review_fact("    Excluded operations", &family["excluded"]);
+            show_host_operation_bounds(&family["scope"]);
         }
         let assessment = &binding["enforcement_and_effects"];
         show_review_fact("  Native assessment", &assessment["status"]);
