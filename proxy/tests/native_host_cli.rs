@@ -1510,6 +1510,8 @@ fn failed_preboot_start_retires_only_its_run_and_preserves_peer_listeners() {
     let temp = tempfile::tempdir().unwrap();
     let root = temp.path().join("i");
     initialize(&root);
+    // Direct CLI and Admin retries need the same checked bundled fixture.
+    owned_run::install_runtime(&root, "#!/bin/sh\nexit 17\n");
     for name in ["alice", "marker"] {
         value(cli(
             &root,
